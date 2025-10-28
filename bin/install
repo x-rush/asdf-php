@@ -2,198 +2,586 @@
 
 set -eo pipefail
 
+# ===================================================================
+# asdf PHP Plugin - Enhanced Version
+# Features: Platform compatibility, Zero-config, Multi-version support
+# ===================================================================
+
+# System compatibility functions
+detect_system_info() {
+    local arch=$(uname -m)
+    case "$arch" in
+        "x86_64"|"amd64") echo "x86_64" ;;
+        "arm64"|"aarch64") echo "arm64" ;;
+        "i386"|"i686") echo "x86" ;;
+        *) echo "$arch" ;;
+    esac
+}
+
+check_system_compatibility() {
+    echo "🔍 Checking system compatibility..."
+    local os=$(uname -s)
+    local arch=$(detect_system_info)
+    local missing_tools=()
+
+    # Check required tools
+    local required_tools=("autoconf" "bison" "gcc" "make" "wget" "curl")
+    for tool in "${required_tools[@]}"; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_tools+=("$tool")
+        fi
+    done
+
+    # Platform-specific checks
+    if [[ "$os" == "Darwin" ]]; then
+        # macOS checks
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "❌ Homebrew not found"
+            echo "🔧 Install from: https://brew.sh/"
+            return 1
+        fi
+
+        # Apple Silicon special handling
+        if [[ "$arch" == "arm64" ]]; then
+            echo "🍎 Detected Apple Silicon (ARM64)"
+            export PATH="/opt/homebrew/bin:$PATH"
+        fi
+    else
+        # Linux checks
+        if ! command -v pkg-config >/dev/null 2>&1; then
+            missing_tools+=("pkg-config")
+        fi
+    fi
+
+    # Report missing tools
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        echo "❌ Missing required tools: ${missing_tools[*]}"
+        if [[ "$os" == "Darwin" ]]; then
+            echo "🔧 Install with: brew install ${missing_tools[*]}"
+        else
+            echo "🔧 Install with: sudo apt-get install ${missing_tools[*]}"
+        fi
+        return 1
+    fi
+
+    echo "✅ System compatibility: $os $arch"
+    return 0
+}
+
+# OpenSSL auto-management functions
+get_openssl_version_for_php() {
+    local php_version=$1
+    local major=$(echo "$php_version" | cut -d. -f1)
+
+    case "$major" in
+        "5") echo "1.0.2u" ;;    # PHP 5.x needs OpenSSL 1.0.2
+        "7") echo "1.1.1w" ;;    # PHP 7.x needs OpenSSL 1.1.x
+        "8")
+            local minor=$(echo "$php_version" | cut -d. -f2)
+            if [[ "$minor" -lt 1 ]]; then
+                echo "1.1.1w"  # PHP 8.0 needs OpenSSL 1.1.x
+            else
+                echo "system"   # PHP 8.1+ can use system OpenSSL
+            fi
+            ;;
+        *) echo "system" ;;
+    esac
+}
+
+get_openssl_target() {
+    local os=$(uname -s)
+    local arch=$(detect_system_info)
+
+    case "$os-$arch" in
+        "Darwin-arm64") echo "darwin64-arm64-cc" ;;
+        "Darwin-x86_64") echo "darwin64-x86_64-cc" ;;
+        "Linux-arm64") echo "linux-aarch64" ;;
+        "Linux-x86_64") echo "linux-x86_64" ;;
+        *) echo "no-asm" ;;
+    esac
+}
+
+compile_openssl_from_source() {
+    local version=$1
+    local install_prefix=$2
+
+    if [[ -d "$install_prefix" && -f "$install_prefix/bin/openssl" ]]; then
+        echo "✅ OpenSSL $version already compiled"
+        return 0
+    fi
+
+    echo "📦 Compiling OpenSSL $version..."
+    mkdir -p "$install_prefix"
+
+    local tmp_dir=$(mktemp -d)
+    cd "$tmp_dir"
+
+    # Download source code
+    local openssl_url="https://www.openssl.org/source/openssl-${version}.tar.gz"
+    echo "   Downloading: $openssl_url"
+
+    if ! wget "$openssl_url"; then
+        echo "❌ Failed to download OpenSSL $version"
+        return 1
+    fi
+
+    # Compile and install
+    tar xzf "openssl-${version}.tar.gz"
+    cd "openssl-${version}"
+
+    local target=$(get_openssl_target)
+    local config_args="--prefix=$install_prefix -fPIC -shared $target"
+
+    echo "   Configure: $config_args"
+    ./Configure $config_args || return 1
+
+    local cpu_count=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+    make -j"$cpu_count" || return 1
+    make install || return 1
+
+    # Cleanup
+    cd /
+    rm -rf "$tmp_dir"
+
+    echo "✅ OpenSSL $version compiled successfully"
+
+    # Set environment variables
+    export PKG_CONFIG_PATH="${install_prefix}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+    export LD_LIBRARY_PATH="${install_prefix}/lib:${LD_LIBRARY_PATH}"
+    return 0
+}
+
+setup_openssl_for_php_version() {
+    local php_version=$1
+    local required_version=$(get_openssl_version_for_php "$php_version")
+
+    echo "🔐 Setting up OpenSSL for PHP $php_version..."
+    echo "   Required version: $required_version"
+
+    # Skip compilation if system version is compatible
+    if [[ "$required_version" == "system" ]]; then
+        echo "⏭️  Using system OpenSSL (PHP 8.1+ compatible)"
+        return 0
+    fi
+
+    # Check system OpenSSL compatibility
+    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists openssl; then
+        local system_version=$(pkg-config --modversion openssl 2>/dev/null)
+        if [[ "$required_version" =~ ^1\.0\. && "$system_version" =~ ^1\.0\. ]]; then
+            echo "✅ System OpenSSL $system_version is compatible"
+            return 0
+        elif [[ "$required_version" =~ ^1\.1\. && "$system_version" =~ ^1\.1\. ]]; then
+            echo "✅ System OpenSSL $system_version is compatible"
+            return 0
+        fi
+    fi
+
+    # Auto-compile OpenSSL if needed
+    local install_dir="$HOME/.asdf/openssl/$required_version"
+    if ! compile_openssl_from_source "$required_version" "$install_dir"; then
+        echo "❌ Failed to compile OpenSSL $required_version"
+        return 1
+    fi
+
+    # Set environment variables for PHP compilation
+    export PKG_CONFIG_PATH="$install_dir/lib/pkgconfig:$PKG_CONFIG_PATH"
+    export LDFLAGS="-L$install_dir/lib $LDFLAGS"
+    export CPPFLAGS="-I$install_dir/include $CPPFLAGS"
+    export PATH="$install_dir/bin:$PATH"
+
+    echo "✅ OpenSSL setup completed"
+    echo "   Using custom OpenSSL: $install_dir"
+    return 0
+}
+
+# Multi-version extension configuration
+get_best_practice_extensions() {
+    local php_version=$1
+    local major=$(echo "$php_version" | cut -d. -f1)
+    local minor=$(echo "$php_version" | cut -d. -f2)
+
+    # Modern core extensions (2024 best practices)
+    local extensions="--enable-bcmath \
+        --enable-calendar \
+        --enable-exif \
+        --enable-fpm \
+        --enable-mbstring \
+        --enable-mysqlnd \
+        --enable-opcache \
+        --enable-pcntl \
+        --enable-sockets \
+        --enable-zip \
+        --with-curl \
+        --with-mysqli \
+        --with-pdo-mysql \
+        --with-zlib \
+        --with-libzip \
+        --enable-intl"
+
+    # Version-specific modern extensions
+    case "$major" in
+        "5")
+            # PHP 5.x - Legacy but optimized
+            extensions="$extensions --enable-gd --with-openssl --with-gd-native-ttf --with-mcrypt"
+            # Add JSON support (PHP 5.2+)
+            if [[ "$minor" -ge 2 ]]; then
+                extensions="$extensions --enable-json"
+            fi
+            ;;
+        "7")
+            # PHP 7.x - Modern extensions
+            extensions="$extensions --enable-gd --with-openssl --with-pdo-pgsql"
+            # PHP 7.1+ modern features
+            if [[ "$minor" -ge 1 ]]; then
+                extensions="$extensions --enable-mysqlnd-compression-support"
+            fi
+            # PHP 7.4+ latest features
+            if [[ "$minor" -ge 4 ]]; then
+                extensions="$extensions --enable-ffi"
+            fi
+            ;;
+        "8")
+            # PHP 8.x - Cutting edge modern extensions
+            extensions="$extensions --enable-gd --with-openssl --with-sodium --with-pdo-pgsql"
+            # PHP 8.1+ newer features
+            if [[ "$minor" -ge 1 ]]; then
+                extensions="$extensions --with-gmp"
+            fi
+            # PHP 8.2+ latest features
+            if [[ "$minor" -ge 2 ]]; then
+                extensions="$extensions --with-ffi"
+            fi
+            ;;
+    esac
+
+    # PEAR is included by default (unless explicitly disabled)
+    if [ "${PHP_WITHOUT_PEAR:-no}" != "no" ]; then
+        extensions="$extensions --without-pear"
+    else
+        extensions="$extensions --with-pear"
+    fi
+
+    echo "$extensions"
+}
+
+# Optimized build configuration
+get_optimized_make_flags() {
+    local cpu_count=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+
+    # Limit max concurrency to avoid memory issues
+    if [[ $cpu_count -gt 4 ]]; then
+        cpu_count=4
+    fi
+
+    echo "-j$cpu_count"
+}
+
+# Create balanced php.ini configuration for universal compatibility
+create_basic_php_ini() {
+    local install_path=$1
+    local major=$(echo "$2" | cut -d. -f1)
+
+    mkdir -p "$install_path/conf.d/"
+
+    # Universal configuration - balanced for development and compatibility
+    cat > "$install_path/conf.d/php.ini" << EOF
+; PHP Configuration for asdf - Universal Environment
+; Balanced settings for development, testing, and compatibility
+
+; Basic Settings (Universal)
+memory_limit = 128M
+max_execution_time = 30
+max_input_time = 60
+
+; Error Reporting (Development-Ready but Safe)
+error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+error_log = "$install_path/conf.d/error.log"
+
+; File Uploads (Reasonable defaults)
+file_uploads = On
+upload_max_filesize = 64M
+post_max_size = 64M
+max_file_uploads = 20
+
+; Security and Compatibility
+expose_php = Off
+allow_url_fopen = On
+allow_url_include = Off
+variables_order = "EGPCS"
+request_order = "GP"
+
+; Session Settings (Universal)
+session.save_handler = files
+session.save_path = "$install_path/conf.d/sessions"
+session.gc_maxlifetime = 1440
+session.cookie_httponly = 1
+
+; OPcache Configuration (Performance optimized)
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 128
+opcache.interned_strings_buffer = 8
+opcache.max_accelerated_files = 10000
+opcache.revalidate_freq = 2
+opcache.validate_timestamps = 1
+opcache.fast_shutdown = 1
+opcache.save_comments = 1
+EOF
+
+    # Version-specific configuration
+    if [[ "$major" == "8" ]]; then
+        cat >> "$install_path/conf.d/php.ini" << EOF
+
+; PHP 8+ specific optimizations
+opcache.validate_permission_maps = 1
+; Conservative JIT settings for compatibility
+opcache.jit_buffer_size = 64M
+opcache.jit = 1205  ; Balanced optimization
+EOF
+    fi
+
+    # Create sessions directory
+    mkdir -p "$install_path/conf.d/sessions"
+
+    # Fix SSL certificate verification for HTTPS requests
+    setup_ssl_certificates "$install_path"
+
+    echo "📝 Created universal php.ini: $install_path/conf.d/php.ini"
+}
+
+# Setup SSL certificates for HTTPS requests
+setup_ssl_certificates() {
+    local install_path=$1
+    local ca_bundle_path="$install_path/conf.d/cacert.pem"
+
+    echo "🔐 Setting up SSL certificates for HTTPS..."
+
+    # Try to download Mozilla CA bundle
+    if command -v wget >/dev/null 2>&1; then
+        if wget -q -O "$ca_bundle_path" "https://curl.se/ca/cacert.pem"; then
+            echo "   ✅ Downloaded Mozilla CA bundle"
+        elif wget -q -O "$ca_bundle_path" "https://curl.haxx.se/ca/cacert.pem"; then
+            echo "   ✅ Downloaded Mozilla CA bundle (alternative source)"
+        else
+            echo "   ⚠️  Failed to download CA bundle, trying system certificates"
+            setup_system_certificates "$install_path"
+            return 0
+        fi
+    elif command -v curl >/dev/null 2>&1; then
+        if curl -s -o "$ca_bundle_path" "https://curl.se/ca/cacert.pem"; then
+            echo "   ✅ Downloaded Mozilla CA bundle"
+        elif curl -s -o "$ca_bundle_path" "https://curl.haxx.se/ca/cacert.pem"; then
+            echo "   ✅ Downloaded Mozilla CA bundle (alternative source)"
+        else
+            echo "   ⚠️  Failed to download CA bundle, trying system certificates"
+            setup_system_certificates "$install_path"
+            return 0
+        fi
+    else
+        echo "   ⚠️  Neither wget nor curl available, using system certificates"
+        setup_system_certificates "$install_path"
+        return 0
+    fi
+
+    # Add CA bundle configuration to php.ini
+    cat >> "$install_path/conf.d/php.ini" << EOF
+
+; SSL Certificate Configuration (for HTTPS requests)
+openssl.cafile = "$ca_bundle_path"
+openssl.capath = "/etc/ssl/certs"
+EOF
+
+    echo "   ✅ SSL certificates configured"
+}
+
+# Fallback to system certificates
+setup_system_certificates() {
+    local install_path=$1
+
+    # Try common system certificate paths
+    local cert_paths=(
+        "/etc/ssl/certs/ca-certificates.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/usr/local/ssl/certs/ca-bundle.crt"
+        "/etc/ssl/cert.pem"
+    )
+
+    for cert_path in "${cert_paths[@]}"; do
+        if [ -f "$cert_path" ]; then
+            cat >> "$install_path/conf.d/php.ini" << EOF
+
+; SSL Certificate Configuration (system certificates)
+openssl.cafile = "$cert_path"
+openssl.capath = "/etc/ssl/certs"
+EOF
+            echo "   ✅ Using system certificates: $cert_path"
+            return 0
+        fi
+    done
+
+    # Last resort: disable certificate verification (not recommended for production)
+    cat >> "$install_path/conf.d/php.ini" << EOF
+
+; SSL Certificate Configuration (development only - no verification)
+; openssl.cafile =
+; openssl.capath =
+EOF
+    echo "   ⚠️  No system certificates found, SSL verification disabled (development only)"
+}
+
+# Create development helper scripts and configurations
+
 install_php() {
   local install_type=$1
   local version=$2
   local install_path=$3
+  local tmp_download_dir=$(mktemp -d)
 
-  if [ "$TMPDIR" = "" ]; then
-    local tmp_download_dir=$(mktemp -d)
-  else
-    local tmp_download_dir=${TMPDIR%/}
+  echo "🚀 Installing PHP $version..."
+  echo "   Platform: $(uname -s) $(detect_system_info)"
+
+  # 1. System compatibility check
+  if ! check_system_compatibility; then
+    echo "❌ System compatibility check failed"
+    exit 1
   fi
 
-  echo "Determining configuration options..."
+  # 2. Automatic OpenSSL environment setup
+  if ! setup_openssl_for_php_version "$version"; then
+    echo "❌ OpenSSL setup failed"
+    exit 1
+  fi
+
+  # 3. Download and compile PHP
   local source_path=$(get_download_file_path $install_type $version $tmp_download_dir)
-  local configure_options="$(construct_configure_options $install_path)"
-  local make_flags="-j$ASDF_CONCURRENCY"
+  download_source $install_type $version $source_path || exit 1
 
-  local operating_system=$(uname -a)
-
-  if [[ $operating_system =~ "Darwin" ]]; then
-    exit_if_homebrew_not_installed
-
-    local bison_path=$(homebrew_package_path bison)
-    local icu4c_path=$(homebrew_package_path icu4c)
-    local krb5_path=$(homebrew_package_path krb5)
-    local libedit_path=$(homebrew_package_path libedit)
-    local libxml2_path=$(homebrew_package_path libxml2)
-    local openssl_path=$(homebrew_package_path openssl@1.1)
-
-    if [ -n "$bison_path" ]; then
-      export "PATH=${bison_path}/bin:${PATH}"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING bison"
-    fi
-
-    if [ -n "$icu4c_path" ]; then
-      export "PKG_CONFIG_PATH=${icu4c_path}/lib/pkgconfig:${PKG_CONFIG_PATH}"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING icu4c"
-    fi
-
-    if [ -n "$krb5_path" ]; then
-      export "PKG_CONFIG_PATH=${krb5_path}/lib/pkgconfig:${PKG_CONFIG_PATH}"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING krb5"
-    fi
-
-    if [ -n "$libedit_path" ]; then
-      export "PKG_CONFIG_PATH=${libedit_path}/lib/pkgconfig:${PKG_CONFIG_PATH}"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libedit"
-    fi
-
-    if [ -n "$libxml2_path" ]; then
-      export "PKG_CONFIG_PATH=${libxml2_path}/lib/pkgconfig:${PKG_CONFIG_PATH}"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libxml2"
-    fi
-
-    if [ -n "$openssl_path" ]; then
-      export "PKG_CONFIG_PATH=${openssl_path}/lib/pkgconfig:${PKG_CONFIG_PATH}"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING openssl"
-    fi
-  fi
-
-  echo "Downloading source code..."
-  download_source $install_type $version $source_path
-
-  # Running this in a subshell because we don't to disturb the current
-  # working directory.
   (
-    echo "Extracting source code..."
     cd $(dirname $source_path)
     tar -zxf $source_path || exit 1
+    cd $(untar_path $install_type $version $tmp_download_dir) || exit 1
 
-    cd $(untar_path $install_type $version $tmp_download_dir)
+    # Configuration and compilation
+    local extensions=$(get_best_practice_extensions "$version")
+    local make_flags=$(get_optimized_make_flags "${ASDF_CONCURRENCY:-}")
 
-    # Target is OS-specific
-    # target=$(get_target)
+    echo "📋 Extensions: $extensions"
+    echo "🔧 Make flags: $make_flags"
 
-    # Build PHP
-    echo "Running buildconfig..."
+    # Preserve user custom configuration options if provided
+    if [ "$PHP_CONFIGURE_OPTIONS" = "" ]; then
+      local configure_options="$extensions --prefix=$install_path --sysconfdir=$install_path --with-config-file-path=$install_path --with-config-file-scan-dir=$install_path/conf.d"
+    else
+      local configure_options="$PHP_CONFIGURE_OPTIONS $extensions --prefix=$install_path --sysconfdir=$install_path --with-config-file-path=$install_path --with-config-file-scan-dir=$install_path/conf.d"
+    fi
+
+    
+    if [ "${PHP_WITHOUT_PDO_PGSQL:-no}" = "no" ]; then
+      local operating_system=$(uname -a)
+      if [[ $operating_system =~ "Darwin" ]]; then
+        local libpq_path=$(homebrew_package_path libpq)
+        if [ -n "$libpq_path" ]; then
+          configure_options="$configure_options --with-pdo-pgsql=$libpq_path"
+        fi
+      else
+        configure_options="$configure_options --with-pdo-pgsql"
+      fi
+    fi
+
+    if [ "${PHP_WITHOUT_PCRE_JIT:-no}" = "no" ]; then
+      configure_options="$configure_options --without-pcre-jit"
+    fi
+
+    echo "🔧 Running buildconf..."
     ./buildconf --force || exit 1
-    echo "Running ./configure $configure_options"
+    echo "🔧 Running ./configure $configure_options"
     ./configure $configure_options || exit 1
-    echo "Running make \"$make_flags\""
-    make "$make_flags" || exit 1
-    echo "Running make install..."
-    # make "$make_flags" test || exit 1
-    make "$make_flags" install || exit 1
-  )
+    echo "🔧 Running make $make_flags"
+    make $make_flags || exit 1
+    echo "🔧 Running make install..."
+    make $make_flags install || exit 1
+  ) || exit 1
 
-  # it's not obvious where php.ini should be placed, let us make it easy for the user
-  mkdir -p $install_path/conf.d/
-  echo "# add system-wide php configuration options here" >$install_path/conf.d/php.ini
+  # 4. Create optimized configuration
+  create_basic_php_ini "$install_path" "$(echo "$version" | cut -d. -f1)"
+
+  # 5. Cleanup and completion
+  rm -rf "$tmp_download_dir"
+
+  echo "✅ PHP $version installed successfully!"
+  echo "   Binary: $install_path/bin/php"
+  echo "   Test: $install_path/bin/php --version"
 }
 
 install_composer() {
   local bin_path=$1/bin
-  local expected_signature="$(curl -sL https://composer.github.io/installer.sig)"
 
-  $bin_path/php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
-  $bin_path/php -r "if (hash_file('sha384', 'composer-setup.php') === '${expected_signature}') { echo 'Installer verified'; } else { echo 'Installer corrupt'; unlink('composer-setup.php'); } echo PHP_EOL;"
-  $bin_path/php composer-setup.php --install-dir=$bin_path --filename=composer
-  $bin_path/php -r "unlink('composer-setup.php');"
+  echo "   Downloading Composer installer..."
+
+  # Try to download installer with SSL verification
+  echo "   Downloading from https://getcomposer.org/installer..."
+  if ! $bin_path/php -r "copy('https://getcomposer.org/installer', '$bin_path/composer-setup.php');" 2>/dev/null; then
+    echo "   Failed to download Composer installer (SSL verification failed)"
+    return 1
+  fi
+
+  # Verify file was downloaded and has content
+  if [ ! -s "$bin_path/composer-setup.php" ]; then
+    echo "   Composer installer file is empty or missing"
+    return 1
+  fi
+
+  echo "   Installer downloaded, file size: $(wc -c < "$bin_path/composer-setup.php") bytes"
+
+  # Download and verify signature
+  local expected_signature="$(curl -sL https://composer.github.io/installer.sig 2>/dev/null)"
+  if [ -z "$expected_signature" ]; then
+    echo "   Failed to download Composer signature"
+    rm -f "$bin_path/composer-setup.php"
+    return 1
+  fi
+
+  # Verify installer
+  cat > /tmp/verify_composer.php << EOF
+<?php
+\$expected = '${expected_signature}';
+\$actual = hash_file('sha384', '${bin_path}/composer-setup.php');
+if (\$expected === \$actual) {
+    echo "Installer verified\n";
+    exit(0);
+} else {
+    echo "Installer corrupt\n";
+    unlink('${bin_path}/composer-setup.php');
+    exit(1);
+}
+?>
+EOF
+
+  if ! $bin_path/php /tmp/verify_composer.php 2>/dev/null; then
+    echo "   Composer installer verification failed"
+    rm -f /tmp/verify_composer.php
+    return 1
+  fi
+
+  rm -f /tmp/verify_composer.php
+
+  # Install Composer
+  if ! $bin_path/php "$bin_path/composer-setup.php" --install-dir=$bin_path --filename=composer 2>/dev/null; then
+    echo "   Composer installation failed"
+    rm -f "$bin_path/composer-setup.php"
+    return 1
+  fi
+
+  # Cleanup
+  $bin_path/php -r "unlink('$bin_path/composer-setup.php');" 2>/dev/null || true
+
+  return 0
 }
 
-construct_configure_options() {
-  local install_path=$1
-
-  # many options included below are not applicable to newer PHP versions
-  # including these will trigger a build warning, but will not b
-  global_config="--prefix=$install_path \
-    --enable-bcmath \
-    --enable-calendar \
-    --enable-dba \
-    --enable-exif \
-    --enable-fpm \
-    --enable-ftp \
-    --enable-gd \
-    --enable-gd-native-ttf \
-    --enable-intl \
-    --enable-mbregex \
-    --enable-mbstring \
-    --enable-mysqlnd \
-    --enable-pcntl \
-    --enable-shmop \
-    --enable-soap \
-    --enable-sockets \
-    --enable-sysvmsg \
-    --enable-sysvsem \
-    --enable-sysvshm \
-    --enable-wddx \
-    --enable-zip \
-    --sysconfdir=$install_path \
-    --with-config-file-path=$install_path \
-    --with-config-file-scan-dir=$install_path/conf.d \
-    --with-curl \
-    --with-external-gd \
-    --with-fpm-group=www-data \
-    --with-fpm-user=www-data \
-    --with-gd \
-    --with-mhash \
-    --with-mysql=mysqlnd \
-    --with-mysqli=mysqlnd \
-    --with-pdo-mysql=mysqlnd \
-    --with-xmlrpc \
-    --with-zip \
-    --with-zlib \
-    --without-snmp"
-
-  if [ "$PHP_CONFIGURE_OPTIONS" = "" ]; then
-    local configure_options="$(os_based_configure_options) $global_config"
-  else
-    local configure_options="$PHP_CONFIGURE_OPTIONS $global_config"
-  fi
-
-  if [ "${PHP_WITHOUT_PEAR:-no}" != "no" ]; then
-    configure_options="$configure_options --without-pear"
-  else
-    configure_options="$configure_options --with-pear"
-  fi
-
-  if [ "${PHP_WITHOUT_PDO_PGSQL:-no}" != "no" ]; then
-    configure_options="$configure_options"
-  else
-    local operating_system=$(uname -a)
-
-    if [[ $operating_system =~ "Darwin" ]]; then
-      exit_if_homebrew_not_installed
-
-      local libpq_path=$(homebrew_package_path libpq)
-
-      if [ -n "$libpq_path" ]; then
-        configure_options="$configure_options --with-pdo-pgsql=$libpq_path"
-      else
-        export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libpq"
-      fi
-    else
-      configure_options="$configure_options --with-pdo-pgsql"
-    fi
-  fi
-
-  if [ "${PHP_WITHOUT_PCRE_JIT:-no}" != "no" ]; then
-    configure_options="$configure_options"
-  else
-    configure_options="$configure_options --without-pcre-jit"
-  fi
-
-  echo "$configure_options"
-}
-
+# Helper functions for package detection (used by enhanced install logic)
 homebrew_package_path() {
   local package_name=$1
 
@@ -204,161 +592,6 @@ homebrew_package_path() {
   fi
 }
 
-exit_if_homebrew_not_installed() {
-  if [ "$(brew --version 2>/dev/null)" = "" ]; then
-    echo "ERROR: Please install homebrew for OSX"
-    exit 1
-  fi
-}
-
-os_based_configure_options() {
-  local operating_system=$(uname -a)
-  local configure_options=""
-
-  if [[ $operating_system =~ "Darwin" ]]; then
-
-    exit_if_homebrew_not_installed
-
-    local bison_path=$(homebrew_package_path bison)
-    local bzip2_path=$(homebrew_package_path bzip2)
-    local freetype_path=$(homebrew_package_path freetype)
-    local gettext_path=$(homebrew_package_path gettext)
-    local iconv_path=$(homebrew_package_path libiconv)
-    local icu4c_path=$(homebrew_package_path icu4c)
-    local jpeg_path=$(homebrew_package_path jpeg)
-    local libedit_path=$(homebrew_package_path libedit)
-    local libpng_path=$(homebrew_package_path libpng)
-    local libxml2_path=$(homebrew_package_path libxml2)
-    local libzip_path=$(homebrew_package_path libzip)
-    local openssl_path=$(homebrew_package_path openssl@1.1)
-    local readline_path=$(homebrew_package_path readline)
-    local webp_path=$(homebrew_package_path webp)
-    local zlib_path=$(homebrew_package_path zlib)
-
-    # optional
-    # if these packages exist they are included in the php compilation
-    local gmp_path=$(homebrew_package_path gmp)
-    local sodium_path=$(homebrew_package_path libsodium)
-
-    if [ -n "$gmp_path" ]; then
-      configure_options="--with-gmp=$gmp_path"
-    else
-      echo "gmp not found, not including in installation"
-    fi
-
-    if [ -n "$sodium_path" ]; then
-      configure_options="$configure_options --with-sodium=$sodium_path"
-    else
-      echo "sodium not found, not including in installation"
-    fi
-
-    if [ -n "$freetype_path" ]; then
-      configure_options="$configure_options --with-freetype-dir=$freetype_path"
-    else
-      export ASDF_PKG_MISSING="freetype"
-    fi
-
-    if [ -n "$bison_path" ]; then
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING bison"
-    fi
-
-    if [ -n "$gettext_path" ]; then
-      configure_options="$configure_options --with-gettext=$gettext_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING gettext"
-    fi
-
-    if [ -n "$icu4c_path" ]; then
-      configure_options="$configure_options --with-icu-dir=$icu4c_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING icu4c"
-    fi
-
-    if [ -n "$jpeg_path" ]; then
-      configure_options="$configure_options --with-jpeg-dir=$jpeg_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING jpeg"
-    fi
-
-    if [ -n "$webp_path" ]; then
-      configure_options="$configure_options --with-webp-dir=$webp_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING webp"
-    fi
-
-    if [ -n "$libpng_path" ]; then
-      configure_options="$configure_options --with-png-dir=$libpng_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libpng"
-    fi
-
-    if [ -n "$openssl_path" ]; then
-      configure_options="$configure_options --with-openssl=$openssl_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING openssl"
-    fi
-
-    if [ -n "$libxml2_path" ]; then
-      configure_options="$configure_options --with-libxml-dir=$libxml2_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libxml2"
-    fi
-
-    if [ -n "$zlib_path" ]; then
-      configure_options="$configure_options --with-zlib-dir=$zlib_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING zlib"
-    fi
-
-    if [ -n "$libzip_path" ]; then
-      configure_options="$configure_options --with-libzip=$libzip_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libzip"
-    fi
-
-    if [ -n "$readline_path" ]; then
-      configure_options="$configure_options --with-readline=$readline_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING readline"
-    fi
-
-    if [ -n "$libedit_path" ]; then
-      configure_options="$configure_options --with-libedit=$libedit_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libedit"
-    fi
-
-    if [ -n "$bzip2_path" ]; then
-      configure_options="$configure_options --with-bz2=$bzip2_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING bzip2"
-    fi
-
-    if [ -n "$iconv_path" ]; then
-      configure_options="$configure_options --with-iconv=$iconv_path"
-    else
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libiconv"
-    fi
-  else
-    local jpeg_path=$(locate libjpeg.so | awk '{ print length(), $0 | "sort -n" }' | cut -d" " -f2- | head -n 1)
-    local libpng_path=$(locate libpng.so | awk '{ print length(), $0 | "sort -n" }' | cut -d" " -f2- | head -n 1)
-    configure_options="--with-openssl --with-curl --with-zlib --with-readline --with-gettext"
-
-    if [ "$jpeg_path" = "" ]; then
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING jpeg"
-    else
-      configure_options="$configure_options --with-jpeg-dir=$jpeg_path --with-jpeg"
-    fi
-
-    if [ "$libpng_path" = "" ]; then
-      export ASDF_PKG_MISSING="$ASDF_PKG_MISSING libpng"
-    else
-      configure_options="$configure_options --with-png-dir=$libpng_path --with-png"
-    fi
-  fi
-
-  echo $configure_options
-}
 
 download_source() {
   local install_type=$1
@@ -410,4 +643,14 @@ get_php_version() {
 }
 
 install_php "$ASDF_INSTALL_TYPE" "$ASDF_INSTALL_VERSION" "$ASDF_INSTALL_PATH"
-install_composer "$ASDF_INSTALL_PATH"
+
+# Install Composer (optional, failure won't affect PHP installation)
+echo "🎵 Installing Composer..."
+if install_composer "$ASDF_INSTALL_PATH"; then
+  echo "✅ Composer installed successfully"
+else
+  echo "⚠️  Composer installation failed (SSL/Certificate issue)"
+  echo "💡 You can install Composer manually later:"
+  echo "   wget -O composer-setup.php https://getcomposer.org/installer"
+  echo "   php composer-setup.php --install-dir=\$HOME/.local/bin --filename=composer"
+fi
