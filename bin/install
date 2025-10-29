@@ -9,20 +9,58 @@ set -eo pipefail
 
 # System compatibility functions
 detect_system_info() {
+    local os=$(uname -s)
     local arch=$(uname -m)
+    local distro=""
+    local package_manager=""
+
+    # Normalize architecture names
     case "$arch" in
-        "x86_64"|"amd64") echo "x86_64" ;;
-        "arm64"|"aarch64") echo "arm64" ;;
-        "i386"|"i686") echo "x86" ;;
-        *) echo "$arch" ;;
+        "x86_64") arch="x86_64" ;;
+        "arm64"|"aarch64") arch="arm64" ;;
+        "i386"|"i686") arch="x86" ;;
+        *) arch="$arch" ;;
     esac
+
+    # Detect Linux distribution
+    if [[ "$os" == "Linux" ]]; then
+        if [[ -f /etc/os-release ]]; then
+            distro=$(grep "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"')
+        elif [[ -f /etc/redhat-release ]]; then
+            distro="rhel"
+        elif [[ -f /etc/debian_version ]]; then
+            distro="debian"
+        fi
+
+        # Detect package manager
+        if command -v apt-get >/dev/null 2>&1; then
+            package_manager="apt"
+        elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
+            package_manager="yum"
+        elif command -v pacman >/dev/null 2>&1; then
+            package_manager="pacman"
+        elif command -v zypper >/dev/null 2>&1; then
+            package_manager="zypper"
+        fi
+    fi
+
+    echo "${os}|${arch}|${distro}|${package_manager}"
 }
 
 check_system_compatibility() {
-    echo "🔍 Checking system compatibility..."
-    local os=$(uname -s)
-    local arch=$(detect_system_info)
+    local system_info=$(detect_system_info)
+    local os=$(echo "$system_info" | cut -d'|' -f1)
+    local arch=$(echo "$system_info" | cut -d'|' -f2)
+    local distro=$(echo "$system_info" | cut -d'|' -f3)
+    local package_manager=$(echo "$system_info" | cut -d'|' -f4)
     local missing_tools=()
+
+    # Detect container environment
+    local is_container=false
+    if [[ -f /.dockerenv ]] || grep -q 'docker\|lxc\|containerd' /proc/1/cgroup 2>/dev/null; then
+        is_container=true
+        export MAKEFLAGS="-j2"  # Reduce parallel compilation in containers
+    fi
 
     # Check required tools
     local required_tools=("autoconf" "bison" "gcc" "make" "wget" "curl")
@@ -43,7 +81,7 @@ check_system_compatibility() {
 
         # Apple Silicon special handling
         if [[ "$arch" == "arm64" ]]; then
-            echo "🍎 Detected Apple Silicon (ARM64)"
+        echo "🍎 Detected Apple Silicon (ARM64)"
             export PATH="/opt/homebrew/bin:$PATH"
         fi
     else
@@ -90,7 +128,7 @@ get_openssl_version_for_php() {
 
 get_openssl_target() {
     local os=$(uname -s)
-    local arch=$(detect_system_info)
+    local arch=$(echo "$(detect_system_info)" | cut -d'|' -f2)
 
     case "$os-$arch" in
         "Darwin-arm64") echo "darwin64-arm64-cc" ;;
@@ -194,7 +232,155 @@ setup_openssl_for_php_version() {
     return 0
 }
 
-# Multi-version extension configuration
+# Multi-platform library path detection
+find_library_path() {
+    local lib_name=$1
+    local system_info=$(detect_system_info)
+    local os=$(echo "$system_info" | cut -d'|' -f1)
+    local arch=$(echo "$system_info" | cut -d'|' -f2)
+
+    # Common library search patterns
+    local lib_patterns=(
+        "lib${lib_name}.so"
+        "lib${lib_name}.a"
+        "${lib_name}.so"
+        "${lib_name}.a"
+    )
+
+    # Platform-specific search paths
+    local search_paths=()
+
+    if [[ "$os" == "Darwin" ]]; then
+        # macOS paths (Intel and Apple Silicon)
+        if [[ "$arch" == "arm64" ]]; then
+            search_paths=(
+                "/opt/homebrew/lib"
+                "/opt/homebrew/lib/$arch-linux-gnu"
+                "/usr/local/lib"
+                "/usr/lib"
+            )
+        else
+            search_paths=(
+                "/usr/local/lib"
+                "/usr/local/Cellar"
+                "/opt/homebrew/lib"
+                "/usr/lib"
+            )
+        fi
+    else
+        # Linux paths with architecture awareness
+        if [[ "$arch" == "arm64" ]]; then
+            search_paths=(
+                "/usr/lib/aarch64-linux-gnu"
+                "/usr/lib64"
+                "/usr/lib"
+                "/usr/local/lib"
+                "/lib/aarch64-linux-gnu"
+                "/lib64"
+            )
+        else
+            search_paths=(
+                "/usr/lib/x86_64-linux-gnu"
+                "/usr/lib64"
+                "/usr/lib"
+                "/usr/local/lib"
+                "/lib/x86_64-linux-gnu"
+                "/lib64"
+            )
+        fi
+    fi
+
+    # Search for library
+    for path in "${search_paths[@]}"; do
+        for pattern in "${lib_patterns[@]}"; do
+            if [[ -f "$path/$pattern" ]]; then
+                echo "$path"
+                return 0
+            fi
+        done
+    done
+
+    return 1
+}
+
+# Enhanced platform-specific library detection
+detect_library_paths() {
+    local os=$(uname -s)
+    local system_info=$(detect_system_info)
+    local arch=$(echo "$system_info" | cut -d'|' -f2)
+    local distro=$(echo "$system_info" | cut -d'|' -f3)
+    local package_manager=$(echo "$system_info" | cut -d'|' -f4)
+
+    local lib_paths=""
+    local missing_libs=()
+
+    # Detect essential libraries with platform awareness
+    local libraries=("freetype" "jpeg" "png" "webp" "zip" "bz2")
+
+    for lib in "${libraries[@]}"; do
+        local lib_path=$(find_library_path "$lib")
+        if [[ -n "$lib_path" ]]; then
+            case "$lib" in
+                "freetype")
+                    lib_paths="$lib_paths --with-freetype-dir=$lib_path"
+                    ;;
+                "jpeg")
+                    lib_paths="$lib_paths --with-jpeg-dir=$lib_path"
+                    ;;
+                "png")
+                    lib_paths="$lib_paths --with-png-dir=$lib_path"
+                    ;;
+                "webp")
+                    lib_paths="$lib_paths --with-webp-dir=$lib_path"
+                    ;;
+                "zip")
+                    lib_paths="$lib_paths --with-libzip=$lib_path"
+                    ;;
+                "bz2")
+                    lib_paths="$lib_paths --with-bz2=$lib_path"
+                    ;;
+            esac
+        else
+            missing_libs+=("$lib")
+        fi
+    done
+
+    echo "$lib_paths"
+}
+
+# Silent library checking (only report errors)
+report_library_status() {
+    local system_info=$(detect_system_info)
+    local os=$(echo "$system_info" | cut -d'|' -f1)
+    local package_manager=$(echo "$system_info" | cut -d'|' -f4)
+    local missing_libs=()
+
+    local libraries=("freetype" "jpeg" "png" "webp" "zip" "bz2")
+
+    for lib in "${libraries[@]}"; do
+        local lib_path=$(find_library_path "$lib")
+        if [[ -z "$lib_path" ]]; then
+            missing_libs+=("$lib")
+        fi
+    done
+
+    # Only report if there are missing libraries
+    if [[ ${#missing_libs[@]} -gt 0 ]]; then
+        echo "❌ Missing required libraries: ${missing_libs[*]}" >&2
+        if [[ "$os" == "Darwin" ]]; then
+            echo "🔧 Install with: brew install ${missing_libs[*]}" >&2
+        elif [[ "$package_manager" == "apt" ]]; then
+            echo "🔧 Install with: sudo apt-get install ${missing_libs[*]}-dev" >&2
+        elif [[ "$package_manager" == "yum" ]]; then
+            echo "🔧 Install with: sudo yum install ${missing_libs[*]}-devel" >&2
+        elif [[ "$package_manager" == "pacman" ]]; then
+            echo "🔧 Install with: sudo pacman -S ${missing_libs[*]}" >&2
+        else
+            echo "🔧 Please install development packages for: ${missing_libs[*]}" >&2
+        fi
+    fi
+}
+
 get_best_practice_extensions() {
     local php_version=$1
     local major=$(echo "$php_version" | cut -d. -f1)
@@ -216,33 +402,53 @@ get_best_practice_extensions() {
         --with-pdo-mysql \
         --with-zlib \
         --with-libzip \
-        --enable-intl"
+        --with-bz2 \
+        --enable-gd \
+        --enable-pdo \
+        --enable-tokenizer \
+        --enable-filter \
+        --enable-fileinfo \
+        --enable-dom \
+        --enable-simplexml \
+        --enable-xml \
+        --enable-ftp \
+        --enable-shmop \
+        --enable-sysvmsg \
+        --enable-sysvsem \
+        --enable-sysvshm \
+        --with-pdo-sqlite \
+        --with-readline"
 
     # Version-specific modern extensions
     case "$major" in
         "5")
-            # PHP 5.x - Legacy but optimized
-            extensions="$extensions --enable-gd --with-openssl --with-gd-native-ttf --with-mcrypt"
-            # Add JSON support (PHP 5.2+)
+            # PHP 5.x - Legacy but optimized (avoid deprecated extensions)
+            extensions="$extensions --with-openssl --with-gd-native-ttf"
+            # Add JSON and intl support (PHP 5.2+)
             if [[ "$minor" -ge 2 ]]; then
-                extensions="$extensions --enable-json"
+                extensions="$extensions --enable-json --enable-intl"
             fi
+            # Add soap for older versions (useful for legacy web services)
+            extensions="$extensions --enable-soap"
             ;;
         "7")
             # PHP 7.x - Modern extensions
-            extensions="$extensions --enable-gd --with-openssl --with-pdo-pgsql"
+            extensions="$extensions --with-openssl --with-pdo-pgsql"
+            # Skip intl extension for PHP 7.2 due to compilation issues
+            if [[ "$minor" -ne 2 ]]; then
+                # Add intl extension for PHP 7.0, 7.1, 7.3, 7.4
+                extensions="$extensions --enable-intl"
+            fi
             # PHP 7.1+ modern features
             if [[ "$minor" -ge 1 ]]; then
                 extensions="$extensions --enable-mysqlnd-compression-support"
             fi
-            # PHP 7.4+ latest features
-            if [[ "$minor" -ge 4 ]]; then
-                extensions="$extensions --enable-ffi"
-            fi
+            # Note: FFI is PHP 8.0+ only, not available in PHP 7.x
+            # PHP 7.4+ specific optimizations can be added here if needed
             ;;
         "8")
             # PHP 8.x - Cutting edge modern extensions
-            extensions="$extensions --enable-gd --with-openssl --with-sodium --with-pdo-pgsql"
+            extensions="$extensions --with-openssl --with-sodium --with-pdo-pgsql --enable-intl --enable-soap"
             # PHP 8.1+ newer features
             if [[ "$minor" -ge 1 ]]; then
                 extensions="$extensions --with-gmp"
@@ -253,6 +459,13 @@ get_best_practice_extensions() {
             fi
             ;;
     esac
+
+    # Report library status (separate from configure command)
+    report_library_status
+
+    # Add platform-specific library paths (silent to avoid mixing with configure)
+    local lib_paths=$(detect_library_paths)
+    extensions="$extensions $lib_paths"
 
     # PEAR is included by default (unless explicitly disabled)
     if [ "${PHP_WITHOUT_PEAR:-no}" != "no" ]; then
