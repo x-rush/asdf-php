@@ -1,10 +1,10 @@
 # asdf-php
 
-🚀 **Enhanced PHP plugin for asdf with zero-configuration, multi-platform, and multi-version support**
+🚀 **Enhanced PHP plugin for asdf with zero-configuration, multi-platform support - optimized for PHP 7.x+**
 
 [![Build history](https://buildstats.info/github/chart/asdf-community/asdf-php?branch=master)](https://github.com/asdf-community/asdf-php/actions)
 
-> **Major Update**: This plugin now features **automatic OpenSSL compatibility management**, **cross-platform support**, and **optimized extension configurations** for modern PHP development.
+> **⚠️ Important**: This plugin is primarily designed for **PHP 7.x and newer versions**. PHP 5.x versions have significant compatibility issues with modern systems and are **not recommended** for use.
 
 ## ✨ Key Features
 
@@ -32,15 +32,16 @@
 
 ## 🚀 Quick Start
 
-### Installation
+### Installation (Recommended for PHP 7.x+)
 ```bash
 # Add the plugin
 asdf plugin-add php https://github.com/asdf-community/asdf-php.git
 
-# Install any PHP version with zero configuration
+# Install modern PHP versions with zero configuration
 asdf install php 8.2.13
+asdf install php 8.1.25
 asdf install php 7.4.33
-asdf install php 5.6.40
+asdf install php 7.4.30
 
 # Set your preferred version
 asdf global php 8.2.13
@@ -48,6 +49,15 @@ asdf global php 8.2.13
 # Verify installation
 php --version
 ```
+
+### ⚠️ PHP 5.x Compatibility Notice
+PHP 5.x versions (5.4, 5.5, 5.6) are **not recommended** due to:
+- **Bison version conflicts**: Modern systems use Bison 3.x, but PHP 5.x requires Bison 2.x
+- **Missing development headers**: libcurl, libxml2, and other dependencies may be missing
+- **Deprecated extensions**: Many features have security vulnerabilities and are no longer maintained
+- **Compilation failures**: High likelihood of build failures on modern systems
+
+**Alternative for PHP 5.x**: Consider using Docker containers or older system environments.
 
 ### What You Get Automatically
 ```bash
@@ -63,14 +73,32 @@ php --version
 
 ## 📋 Supported Versions
 
-| PHP Version | OpenSSL | Extensions | Status |
-|-------------|----------|------------|--------|
-| **5.6** | 1.0.2u (auto) | 21 extensions | ✅ Legacy Support |
-| **7.4** | 1.1.1w (auto) | 21 extensions | ✅ Stable |
-| **8.0** | 1.1.1w (auto) | 21 extensions | ✅ Modern |
-| **8.1** | System OpenSSL | 21 extensions | ✅ Latest |
-| **8.2** | System OpenSSL | 21 extensions | ✅ Latest |
-| **8.3** | System OpenSSL | 21 extensions | ✅ Latest |
+### ✅ **Recommended Versions (Full Support)**
+
+| PHP Version | OpenSSL | Extensions | Status | Notes |
+|-------------|----------|------------|--------|-------|
+| **8.3** | System OpenSSL | 22 extensions | ✅ Latest | Modern features, best performance |
+| **8.2** | System OpenSSL | 22 extensions | ✅ Latest | FFI support, enum improvements |
+| **8.1** | System OpenSSL | 22 extensions | ✅ Latest | Sodium, GMP support |
+| **8.0** | 1.1.1w (auto) | 22 extensions | ✅ Modern | Last version before breaking changes |
+| **7.4** | 1.1.1w (auto) | 22 extensions | ✅ Stable | Excellent compatibility, still maintained |
+
+### ⚠️ **Legacy Versions (Limited Support)**
+
+| PHP Version | OpenSSL | Extensions | Status | Compatibility Issues |
+|-------------|----------|------------|--------|----------------------|
+| **7.3** | 1.1.1w (auto) | 21 extensions | ⚠️ Limited | Intl extension skipped, freetype disabled |
+| **7.2** | 1.1.1w (auto) | 21 extensions | ⚠️ Limited | Multiple extension compilation issues |
+| **7.1** | 1.1.1w (auto) | 22 extensions | ⚠️ Limited | Minor compatibility issues |
+| **7.0** | 1.1.1w (auto) | 22 extensions | ⚠️ Limited | End-of-life, security concerns |
+
+### ❌ **Not Recommended (High Failure Rate)**
+
+| PHP Version | OpenSSL | Extensions | Status | Known Issues |
+|-------------|----------|------------|--------|-------------|
+| **5.6** | 1.0.2u (auto) | 22 extensions | ❌ Not Recommended | Bison 3.x conflicts, missing dev headers |
+| **5.5** | 1.0.2u (auto) | 22 extensions | ❌ Not Recommended | Same as 5.6, even worse compatibility |
+| **5.4** | 1.0.2u (auto) | 22 extensions | ❌ Not Recommended | Bison 3.x conflicts, libcurl issues |
 
 ## 🔧 Advanced Usage
 
@@ -173,6 +201,30 @@ php -S localhost:8000  # Built-in server
 
 ### Common Issues
 
+#### PHP 5.x Compilation Failures
+```bash
+# Symptoms:
+# - "bison is required" errors (version too new)
+# - "Please reinstall the libcurl distribution" errors
+# - Various missing development header errors
+
+# Solution: Use Docker for PHP 5.x
+docker run --rm -it php:5.6-apache bash
+# Or use an older system with compatible tool versions
+```
+
+#### PHP 7.x Extension Issues
+```bash
+# Check available extensions
+php -m
+
+# Check PHP configuration
+php --ini
+
+# GD extension without freetype (expected behavior for 7.3 and below)
+php -r "if (function_exists('imagettftext')) echo 'TTF supported'; else echo 'TTF not available';"
+```
+
 #### OpenSSL Compilation
 ```bash
 # Clear cache and reinstall
@@ -180,25 +232,47 @@ rm -rf ~/.asdf/openssl/
 asdf install php <version>
 ```
 
-#### Extension Issues
-```bash
-# Check available extensions
-php -m
-
-# Check PHP configuration
-php --ini
-```
-
 #### Platform-Specific Issues
 The plugin automatically detects and handles platform-specific requirements. Check the installation output for compatibility information.
 
-### Getting Help
-This plugin is designed to work out-of-the-box with zero configuration. If you encounter issues:
+### Version Recommendations
 
-1. Check that you have the required build tools installed
-2. Ensure your system meets the prerequisites listed above
-3. Review the installation output for any error messages
-4. Check the [GitHub Issues](https://github.com/asdf-community/asdf-php/issues) for known problems
+- **For new projects**: Use **PHP 8.1+** for latest features and security
+- **For legacy projects**: Use **PHP 7.4** for excellent compatibility
+- **For testing**: PHP 8.2+ for modern development
+- **Avoid PHP 5.x**: High failure rate on modern systems
+
+### Getting Help
+This plugin is designed to work out-of-the-box with zero configuration for PHP 7.x+. If you encounter issues:
+
+1. **Use PHP 7.4+** for the best experience
+2. Check that you have the required build tools installed
+3. Ensure your system meets the prerequisites listed above
+4. Review the installation output for any error messages
+5. Check the [GitHub Issues](https://github.com/asdf-community/asdf-php/issues) for known problems
+
+**PHP 5.x Issues**: Due to incompatibility with modern systems, PHP 5.x issues are considered expected behavior and may not receive support.
+
+## 🎯 Version Support Philosophy
+
+### Primary Focus: PHP 7.x+
+This plugin is designed and optimized for **PHP 7.4 and newer versions**, providing:
+- ✅ **Reliable compilation** on modern systems
+- ✅ **Complete extension support** with best practices
+- ✅ **Security-focused configurations**
+- ✅ **Zero-configuration experience**
+
+### Legacy PHP 5.x Support
+PHP 5.x support is provided on a **best-effort basis** but comes with significant limitations:
+- ❌ **High compilation failure rate** on modern systems
+- ❌ **Missing development tools** (Bison 3.x incompatibility)
+- ❌ **Security vulnerabilities** (end-of-life versions)
+- ❌ **Limited troubleshooting support**
+
+### Recommended Approach
+1. **New Projects**: Start with PHP 8.1+ for modern features
+2. **Legacy Projects**: Upgrade to PHP 7.4+ if possible
+3. **PHP 5.x Requirements**: Use Docker containers or dedicated environments
 
 ## 🤝 Contributing
 
@@ -206,8 +280,8 @@ This plugin is actively maintained and improved. We welcome contributions!
 
 ### Development Setup
 ```bash
-# Clone the repository
-git clone https://github.com/asdf-community/asdf-php.git
+# Clone your fork
+git clone https://github.com/x-rush/asdf-php.git
 cd asdf-php
 
 # Test changes
@@ -215,11 +289,12 @@ bash bin/install --help
 ```
 
 ### What We've Improved
-- ✅ **Zero Configuration**: Works out-of-the-box
+- ✅ **Zero Configuration**: Works out-of-the-box for PHP 7.x+
 - ✅ **Multi-Platform**: macOS, Linux, ARM64, x86_64 support
 - ✅ **OpenSSL Compatibility**: Automatic version management
 - ✅ **Modern Extensions**: 2024 best practices
 - ✅ **Performance Optimized**: Parallel compilation and caching
+- ✅ **Realistic Expectations**: Clear version support guidance
 
 ## 📄 License
 
