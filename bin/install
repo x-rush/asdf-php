@@ -7,6 +7,24 @@ set -eo pipefail
 # Features: Platform compatibility, Zero-config, Multi-version support
 # ===================================================================
 
+
+# Simplified freetype configuration - only for PHP 7.4+
+configure_freetype_intelligently() {
+    local php_version=$1
+    local freetype_path=$(find_library_path "freetype")
+    local php_major=$(echo "$php_version" | cut -d. -f1)
+    local php_minor=$(echo "$php_version" | cut -d. -f2)
+
+    # Only enable freetype for PHP 7.4+ where pkg-config is natively supported
+    if [[ "$php_major" == "7" && "$php_minor" -ge 4 ]] || [[ "$php_major" == "8" ]]; then
+        # Modern PHP versions use pkg-config natively
+        if [[ -n "$freetype_path" ]] && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists freetype2 2>/dev/null; then
+            echo "--with-freetype"
+        fi
+    fi
+    # For PHP 7.3 and below: skip freetype entirely to avoid compilation issues
+}
+
 # System compatibility functions
 detect_system_info() {
     local os=$(uname -s)
@@ -348,6 +366,39 @@ detect_library_paths() {
     echo "$lib_paths"
 }
 
+# Library detection excluding GD-related libraries (to avoid duplication)
+detect_library_paths_without_gd() {
+    local os=$(uname -s)
+    local system_info=$(detect_system_info)
+    local arch=$(echo "$system_info" | cut -d'|' -f2)
+    local distro=$(echo "$system_info" | cut -d'|' -f3)
+    local package_manager=$(echo "$system_info" | cut -d'|' -f4)
+
+    local lib_paths=""
+    local missing_libs=()
+
+    # Detect essential libraries EXCEPT GD-related ones (handled separately)
+    local libraries=("zip" "bz2")
+
+    for lib in "${libraries[@]}"; do
+        local lib_path=$(find_library_path "$lib")
+        if [[ -n "$lib_path" ]]; then
+            case "$lib" in
+                "zip")
+                    lib_paths="$lib_paths --with-libzip=$lib_path"
+                    ;;
+                "bz2")
+                    lib_paths="$lib_paths --with-bz2=$lib_path"
+                    ;;
+            esac
+        else
+            missing_libs+=("$lib")
+        fi
+    done
+
+    echo "$lib_paths"
+}
+
 # Silent library checking (only report errors)
 report_library_status() {
     local system_info=$(detect_system_info)
@@ -386,9 +437,11 @@ get_best_practice_extensions() {
     local major=$(echo "$php_version" | cut -d. -f1)
     local minor=$(echo "$php_version" | cut -d. -f2)
 
-    # Modern core extensions (2024 best practices)
+    # Modern core extensions (2024 best practices) + compatibility with original script
+    # GD extension will be handled separately with platform-specific logic
     local extensions="--enable-bcmath \
         --enable-calendar \
+        --enable-dba \
         --enable-exif \
         --enable-fpm \
         --enable-mbstring \
@@ -403,7 +456,6 @@ get_best_practice_extensions() {
         --with-zlib \
         --with-libzip \
         --with-bz2 \
-        --enable-gd \
         --enable-pdo \
         --enable-tokenizer \
         --enable-filter \
@@ -419,21 +471,23 @@ get_best_practice_extensions() {
         --with-pdo-sqlite \
         --with-readline"
 
-    # Version-specific modern extensions
+    # Version-specific best practice extensions - maintain each version's optimal features
     case "$major" in
         "5")
-            # PHP 5.x - Legacy but optimized (avoid deprecated extensions)
-            extensions="$extensions --with-openssl --with-gd-native-ttf"
+            # PHP 5.x - Legacy extensions (best practices for their era)
+            extensions="$extensions --with-openssl --with-gd-native-ttf --with-gettext"
             # Add JSON and intl support (PHP 5.2+)
             if [[ "$minor" -ge 2 ]]; then
                 extensions="$extensions --enable-json --enable-intl"
             fi
+            # PHP 5.x specific legacy extensions
+            extensions="$extensions --enable-wddx --with-mhash --with-mysql=mysqlnd --with-xmlrpc"
             # Add soap for older versions (useful for legacy web services)
             extensions="$extensions --enable-soap"
             ;;
         "7")
-            # PHP 7.x - Modern extensions
-            extensions="$extensions --with-openssl --with-pdo-pgsql"
+            # PHP 7.x - Modern extensions with legacy compatibility
+            extensions="$extensions --with-openssl --with-pdo-pgsql --with-gettext"
             # Skip intl extension for PHP 7.2 due to compilation issues
             if [[ "$minor" -ne 2 ]]; then
                 # Add intl extension for PHP 7.0, 7.1, 7.3, 7.4
@@ -443,12 +497,16 @@ get_best_practice_extensions() {
             if [[ "$minor" -ge 1 ]]; then
                 extensions="$extensions --enable-mysqlnd-compression-support"
             fi
-            # Note: FFI is PHP 8.0+ only, not available in PHP 7.x
-            # PHP 7.4+ specific optimizations can be added here if needed
+            # PHP 7.4+ add sodium support (backport available)
+            if [[ "$minor" -ge 4 ]]; then
+                extensions="$extensions --with-sodium"
+            fi
+            # PHP 7.x still supports xmlrpc (removed in 8.0)
+            extensions="$extensions --with-xmlrpc"
             ;;
         "8")
-            # PHP 8.x - Cutting edge modern extensions
-            extensions="$extensions --with-openssl --with-sodium --with-pdo-pgsql --enable-intl --enable-soap"
+            # PHP 8.x - Cutting edge modern extensions (no legacy deprecated features)
+            extensions="$extensions --with-openssl --with-sodium --with-pdo-pgsql --enable-intl --enable-soap --with-gettext"
             # PHP 8.1+ newer features
             if [[ "$minor" -ge 1 ]]; then
                 extensions="$extensions --with-gmp"
@@ -457,14 +515,19 @@ get_best_practice_extensions() {
             if [[ "$minor" -ge 2 ]]; then
                 extensions="$extensions --with-ffi"
             fi
+            # Note: wddx, mhash, mysql, xmlrpc removed in PHP 8.0 - correctly omitted
             ;;
     esac
 
     # Report library status (separate from configure command)
     report_library_status
 
-    # Add platform-specific library paths (silent to avoid mixing with configure)
-    local lib_paths=$(detect_library_paths)
+    # Multi-platform, multi-version GD extension configuration
+    # This ensures GD extension works reliably across all environments
+    extensions="$extensions $(configure_gd_extension "$php_version")"
+
+    # Add remaining platform-specific library paths (excluding GD libraries already handled)
+    local lib_paths=$(detect_library_paths_without_gd)
     extensions="$extensions $lib_paths"
 
     # PEAR is included by default (unless explicitly disabled)
@@ -475,6 +538,114 @@ get_best_practice_extensions() {
     fi
 
     echo "$extensions"
+}
+
+# Multi-platform, multi-version GD extension configuration
+configure_gd_extension() {
+    local php_version=$1
+    local major=$(echo "$php_version" | cut -d. -f1)
+    local minor=$(echo "$php_version" | cut -d. -f2)
+    local system_info=$(detect_system_info)
+    local os=$(echo "$system_info" | cut -d'|' -f1)
+    local arch=$(echo "$system_info" | cut -d'|' -f2)
+
+    # Version-specific GD configuration
+    local gd_config=""
+    case "$major" in
+        "5")
+            # PHP 5.x: Basic GD configuration (from original script)
+            gd_config="--enable-gd --with-gd"
+            if [[ "$minor" -ge 2 ]]; then
+                gd_config="$gd_config --enable-gd-native-ttf"
+            fi
+            ;;
+        "7")
+            # PHP 7.x: Use version-appropriate GD configuration
+            gd_config="--with-gd"
+            if [[ "$minor" -ge 1 ]]; then
+                gd_config="$gd_config --enable-gd-native-ttf"
+            fi
+            if [[ "$minor" -ge 3 ]]; then
+                # PHP 7.3+: Supports external GD
+                gd_config="$gd_config --with-external-gd"
+            fi
+            ;;
+        "8")
+            # PHP 8.x: Enhanced GD configuration
+            gd_config="--enable-gd --enable-gd-native-ttf --with-external-gd --with-gd"
+            ;;
+    esac
+
+    # Intelligent freetype configuration based on PHP version
+    local freetype_config=$(configure_freetype_intelligently "$php_version")
+    if [[ -n "$freetype_config" ]]; then
+        gd_config="$gd_config $freetype_config"
+    fi
+
+    # Platform-specific library configuration
+    if [[ "$os" == "Darwin" ]]; then
+        # macOS: Use Homebrew paths
+        gd_config="$gd_config$(configure_gd_macos)"
+    else
+        # Linux: Use system library detection
+        gd_config="$gd_config$(configure_gd_linux)"
+    fi
+
+    echo "$gd_config"
+}
+
+# macOS-specific GD configuration using Homebrew
+configure_gd_macos() {
+    local gd_config=""
+
+    # Check for Homebrew-installed libraries (freetype handled intelligently)
+    local jpeg_path=$(brew --prefix jpeg 2>/dev/null || echo "")
+    local libpng_path=$(brew --prefix libpng 2>/dev/null || echo "")
+    local webp_path=$(brew --prefix webp 2>/dev/null || echo "")
+
+    # Add library paths if found
+    if [[ -n "$jpeg_path" && -d "$jpeg_path" ]]; then
+        gd_config="$gd_config --with-jpeg-dir=$jpeg_path"
+    fi
+    if [[ -n "$libpng_path" && -d "$libpng_path" ]]; then
+        gd_config="$gd_config --with-png-dir=$libpng_path"
+    fi
+    if [[ -n "$webp_path" && -d "$webp_path" ]]; then
+        gd_config="$gd_config --with-webp-dir=$webp_path"
+    fi
+
+    echo "$gd_config"
+}
+
+# Linux-specific GD configuration
+configure_gd_linux() {
+    local gd_config=""
+
+    # Use locate command like the original script for better reliability
+    local jpeg_path=$(locate libjpeg.so 2>/dev/null | awk '{ print length(), $0 | "sort -n" }' | cut -d" " -f2- | head -n 1)
+    local png_path=$(locate libpng.so 2>/dev/null | awk '{ print length(), $0 | "sort -n" }' | cut -d" " -f2- | head -n 1)
+    local webp_path=$(find_library_path "webp")
+
+    # Extract directory paths from full file paths
+    if [[ -n "$jpeg_path" ]]; then
+        jpeg_path=$(dirname "$jpeg_path")
+    fi
+    if [[ -n "$png_path" ]]; then
+        png_path=$(dirname "$png_path")
+    fi
+
+    # Add libraries using both --with-lib-dir and --with-lib patterns (original script approach)
+    if [[ -n "$jpeg_path" ]]; then
+        gd_config="$gd_config --with-jpeg-dir=$jpeg_path --with-jpeg"
+    fi
+    if [[ -n "$png_path" ]]; then
+        gd_config="$gd_config --with-png-dir=$png_path --with-png"
+    fi
+    if [[ -n "$webp_path" ]]; then
+        gd_config="$gd_config --with-webp-dir=$webp_path"
+    fi
+
+    echo "$gd_config"
 }
 
 # Optimized build configuration
@@ -655,7 +826,7 @@ install_php() {
 
   echo "🚀 Installing PHP $version..."
   echo "   Platform: $(uname -s) $(detect_system_info)"
-
+  
   # 1. System compatibility check
   if ! check_system_compatibility; then
     echo "❌ System compatibility check failed"
@@ -681,9 +852,7 @@ install_php() {
     local extensions=$(get_best_practice_extensions "$version")
     local make_flags=$(get_optimized_make_flags "${ASDF_CONCURRENCY:-}")
 
-    echo "📋 Extensions: $extensions"
-    echo "🔧 Make flags: $make_flags"
-
+  
     # Preserve user custom configuration options if provided
     if [ "$PHP_CONFIGURE_OPTIONS" = "" ]; then
       local configure_options="$extensions --prefix=$install_path --sysconfdir=$install_path --with-config-file-path=$install_path --with-config-file-scan-dir=$install_path/conf.d"
@@ -708,13 +877,10 @@ install_php() {
       configure_options="$configure_options --without-pcre-jit"
     fi
 
-    echo "🔧 Running buildconf..."
+    # Build PHP normally (no complex freetype wrapper needed)
     ./buildconf --force || exit 1
-    echo "🔧 Running ./configure $configure_options"
     ./configure $configure_options || exit 1
-    echo "🔧 Running make $make_flags"
     make $make_flags || exit 1
-    echo "🔧 Running make install..."
     make $make_flags install || exit 1
   ) || exit 1
 
