@@ -257,9 +257,10 @@ find_library_path() {
     local os=$(echo "$system_info" | cut -d'|' -f1)
     local arch=$(echo "$system_info" | cut -d'|' -f2)
 
-    # Common library search patterns
+    # Enhanced library search patterns - include versioned libraries
     local lib_patterns=(
         "lib${lib_name}.so"
+        "lib${lib_name}.so.*"  # Versioned libraries like libzip.so.4
         "lib${lib_name}.a"
         "${lib_name}.so"
         "${lib_name}.a"
@@ -311,10 +312,13 @@ find_library_path() {
     # Search for library
     for path in "${search_paths[@]}"; do
         for pattern in "${lib_patterns[@]}"; do
-            if [[ -f "$path/$pattern" ]]; then
-                echo "$path"
-                return 0
-            fi
+            # Use glob expansion to check for versioned libraries
+            for file in $path/$pattern; do
+                if [[ -f "$file" ]]; then
+                    echo "$path"
+                    return 0
+                fi
+            done
         done
     done
 
@@ -368,6 +372,9 @@ detect_library_paths() {
 
 # Library detection excluding GD-related libraries (to avoid duplication)
 detect_library_paths_without_gd() {
+    local php_version=$1
+    local major=$(echo "$php_version" | cut -d. -f1)
+    local minor=$(echo "$php_version" | cut -d. -f2)
     local os=$(uname -s)
     local system_info=$(detect_system_info)
     local arch=$(echo "$system_info" | cut -d'|' -f2)
@@ -378,7 +385,13 @@ detect_library_paths_without_gd() {
     local missing_libs=()
 
     # Detect essential libraries EXCEPT GD-related ones (handled separately)
-    local libraries=("zip" "bz2")
+    local libraries=("bz2")
+
+    # For PHP 7.4+, ZIP is handled as shared extension, so only add BZ2
+    # For older versions, include ZIP
+    if [[ "$major" != "7" || "$minor" -lt 4 ]]; then
+        libraries+=("zip")
+    fi
 
     for lib in "${libraries[@]}"; do
         local lib_path=$(find_library_path "$lib")
@@ -406,7 +419,8 @@ report_library_status() {
     local package_manager=$(echo "$system_info" | cut -d'|' -f4)
     local missing_libs=()
 
-    local libraries=("freetype" "jpeg" "png" "webp" "zip" "bz2")
+    # Extended library detection scope - zero-configuration best practices
+    local libraries=("freetype" "jpeg" "png" "webp" "zip" "bz2" "heif" "avif" "onig" "icu" "ldap" "gmp" "sqlite3" "argon2")
 
     for lib in "${libraries[@]}"; do
         local lib_path=$(find_library_path "$lib")
@@ -417,7 +431,7 @@ report_library_status() {
 
     # Only report if there are missing libraries
     if [[ ${#missing_libs[@]} -gt 0 ]]; then
-        echo "❌ Missing required libraries: ${missing_libs[*]}" >&2
+        echo "❌ Missing optional libraries: ${missing_libs[*]}" >&2
         if [[ "$os" == "Darwin" ]]; then
             echo "🔧 Install with: brew install ${missing_libs[*]}" >&2
         elif [[ "$package_manager" == "apt" ]]; then
@@ -439,9 +453,10 @@ get_best_practice_extensions() {
 
     # Modern core extensions (2024 best practices) + compatibility with original script
     # GD extension will be handled separately with platform-specific logic
+    # ZIP extension will be handled separately for different PHP versions
+    # DBA extension will be handled separately to avoid configuration issues
     local extensions="--enable-bcmath \
         --enable-calendar \
-        --enable-dba \
         --enable-exif \
         --enable-fpm \
         --enable-mbstring \
@@ -449,12 +464,10 @@ get_best_practice_extensions() {
         --enable-opcache \
         --enable-pcntl \
         --enable-sockets \
-        --enable-zip \
         --with-curl \
         --with-mysqli \
         --with-pdo-mysql \
         --with-zlib \
-        --with-libzip \
         --with-bz2 \
         --enable-pdo \
         --enable-tokenizer \
@@ -488,6 +501,8 @@ get_best_practice_extensions() {
         "7")
             # PHP 7.x - Modern extensions with legacy compatibility
             extensions="$extensions --with-openssl --with-pdo-pgsql --with-gettext"
+            # Add ZIP extension with proper configuration
+            extensions="$extensions $(configure_zip_extension "$php_version")"
             # Skip intl extension for PHP 7.2 due to compilation issues
             if [[ "$minor" -ne 2 ]]; then
                 # Add intl extension for PHP 7.0, 7.1, 7.3, 7.4
@@ -503,6 +518,15 @@ get_best_practice_extensions() {
             fi
             # PHP 7.x still supports xmlrpc (removed in 8.0)
             extensions="$extensions --with-xmlrpc"
+            # Add modern PHP extension support - zero-configuration best practices
+            extensions="$extensions --with-ldap"  # LDAP support
+            if [[ "$minor" -ge 2 ]]; then
+                extensions="$extensions --with-argon2"  # Argon2 password hashing (7.2+)
+            fi
+            # GMP support (multi-precision mathematics)
+            extensions="$extensions --with-gmp"
+            # DBA support - Use system default backend, avoid specifying specific database
+            extensions="$extensions --enable-dba"
             ;;
         "8")
             # PHP 8.x - Cutting edge modern extensions (no legacy deprecated features)
@@ -515,6 +539,11 @@ get_best_practice_extensions() {
             if [[ "$minor" -ge 2 ]]; then
                 extensions="$extensions --with-ffi"
             fi
+            # Add modern PHP extension support
+            extensions="$extensions --with-ldap"  # LDAP support
+            extensions="$extensions --with-argon2"  # Argon2 password hashing
+            # DBA support - Use system default backend, avoid specifying specific database
+            extensions="$extensions --enable-dba"
             # Note: wddx, mhash, mysql, xmlrpc removed in PHP 8.0 - correctly omitted
             ;;
     esac
@@ -527,7 +556,7 @@ get_best_practice_extensions() {
     extensions="$extensions $(configure_gd_extension "$php_version")"
 
     # Add remaining platform-specific library paths (excluding GD libraries already handled)
-    local lib_paths=$(detect_library_paths_without_gd)
+    local lib_paths=$(detect_library_paths_without_gd "$php_version")
     extensions="$extensions $lib_paths"
 
     # PEAR is included by default (unless explicitly disabled)
@@ -538,6 +567,40 @@ get_best_practice_extensions() {
     fi
 
     echo "$extensions"
+}
+
+# Configure ZIP extension with proper library detection - Zero-config multi-version support
+configure_zip_extension() {
+    local php_version=$1
+    local major=$(echo "$php_version" | cut -d. -f1)
+    local minor=$(echo "$php_version" | cut -d. -f2)
+
+    # PHP version-specific ZIP configuration - zero-configuration best practices
+    if [[ "$major" == "5" ]] || [[ "$major" == "7" && "$minor" -le 3 ]]; then
+        # PHP 5.x and 7.0-7.3: Use --enable-zip
+        local libzip_path=$(find_library_path "zip")
+        if [[ -n "$libzip_path" ]]; then
+            echo "--enable-zip --with-libzip=$libzip_path"
+        else
+            echo "--enable-zip"
+        fi
+    elif [[ "$major" == "7" && "$minor" -ge 4 ]] || [[ "$major" == "8" ]]; then
+        # PHP 7.4+ and PHP 8.x: Use --with-zip (shared extension)
+        local libzip_path=$(find_library_path "zip")
+        if [[ -n "$libzip_path" ]]; then
+            echo "--with-zip=$libzip_path"
+        else
+            # Use pkg-config as fallback
+            if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libzip; then
+                echo "--with-zip"
+            else
+                echo "--with-zip"  # Try anyway
+            fi
+        fi
+    else
+        # Safe handling for future versions
+        echo "--with-zip"
+    fi
 }
 
 # Multi-platform, multi-version GD extension configuration
@@ -561,7 +624,13 @@ configure_gd_extension() {
             ;;
         "7")
             # PHP 7.x: Use version-appropriate GD configuration
-            gd_config="--with-gd"
+            if [[ "$minor" -ge 4 ]]; then
+                # PHP 7.4+: Use shared GD extension
+                gd_config="--enable-gd=shared"
+            else
+                # PHP 7.0-7.3: Use static GD
+                gd_config="--with-gd"
+            fi
             if [[ "$minor" -ge 1 ]]; then
                 gd_config="$gd_config --enable-gd-native-ttf"
             fi
@@ -582,26 +651,51 @@ configure_gd_extension() {
         gd_config="$gd_config $freetype_config"
     fi
 
-    # Platform-specific library configuration
-    if [[ "$os" == "Darwin" ]]; then
-        # macOS: Use Homebrew paths
-        gd_config="$gd_config$(configure_gd_macos)"
-    else
-        # Linux: Use system library detection
-        gd_config="$gd_config$(configure_gd_linux)"
+    # Platform-specific library configuration - only for non-shared extensions
+    if [[ ! "$gd_config" =~ "=shared" ]]; then
+        if [[ "$os" == "Darwin" ]]; then
+            # macOS: Use Homebrew paths
+            gd_config="$gd_config$(configure_gd_macos)"
+        else
+            # Linux: Use system library detection
+            gd_config="$gd_config$(configure_gd_linux)"
+        fi
     fi
 
     echo "$gd_config"
 }
 
-# macOS-specific GD configuration using Homebrew
+# macOS-specific GD configuration using Homebrew - Enhanced multi-platform support
 configure_gd_macos() {
     local gd_config=""
 
-    # Check for Homebrew-installed libraries (freetype handled intelligently)
-    local jpeg_path=$(brew --prefix jpeg 2>/dev/null || echo "")
-    local libpng_path=$(brew --prefix libpng 2>/dev/null || echo "")
-    local webp_path=$(brew --prefix webp 2>/dev/null || echo "")
+    # Enhanced Homebrew path detection - Support Apple Silicon and Intel
+    local system_info=$(detect_system_info)
+    local arch=$(echo "$system_info" | cut -d'|' -f2)
+
+    # Set correct Homebrew prefix path
+    local brew_prefix=""
+    if [[ "$arch" == "arm64" ]]; then
+        brew_prefix="/opt/homebrew"
+    else
+        brew_prefix="/usr/local"
+    fi
+
+    # Check for Homebrew-installed libraries with better error handling
+    local jpeg_path=""
+    local libpng_path=""
+    local webp_path=""
+    local heif_path=""
+    local avif_path=""
+
+    # Safe Homebrew detection
+    if command -v brew >/dev/null 2>&1; then
+        jpeg_path=$(brew --prefix jpeg 2>/dev/null || echo "")
+        libpng_path=$(brew --prefix libpng 2>/dev/null || echo "")
+        webp_path=$(brew --prefix webp 2>/dev/null || echo "")
+        heif_path=$(brew --prefix libheif 2>/dev/null || echo "")
+        avif_path=$(brew --prefix libavif 2>/dev/null || echo "")
+    fi
 
     # Add library paths if found
     if [[ -n "$jpeg_path" && -d "$jpeg_path" ]]; then
@@ -613,28 +707,46 @@ configure_gd_macos() {
     if [[ -n "$webp_path" && -d "$webp_path" ]]; then
         gd_config="$gd_config --with-webp-dir=$webp_path"
     fi
+    # Add modern image format support
+    if [[ -n "$heif_path" && -d "$heif_path" ]]; then
+        gd_config="$gd_config --with-heif-dir=$heif_path"
+    fi
+    if [[ -n "$avif_path" && -d "$avif_path" ]]; then
+        gd_config="$gd_config --with-avif-dir=$avif_path"
+    fi
 
     echo "$gd_config"
 }
 
-# Linux-specific GD configuration
+# Linux-specific GD configuration with modern image format support
 configure_gd_linux() {
     local gd_config=""
 
-    # Use locate command like the original script for better reliability
-    local jpeg_path=$(locate libjpeg.so 2>/dev/null | awk '{ print length(), $0 | "sort -n" }' | cut -d" " -f2- | head -n 1)
-    local png_path=$(locate libpng.so 2>/dev/null | awk '{ print length(), $0 | "sort -n" }' | cut -d" " -f2- | head -n 1)
+    # Use find command instead of locate for better compatibility
+    local jpeg_path=$(find /usr/lib* /lib* -name "libjpeg.so*" 2>/dev/null | head -n 1 | xargs dirname 2>/dev/null || echo "")
+    local png_path=$(find /usr/lib* /lib* -name "libpng.so*" 2>/dev/null | head -n 1 | xargs dirname 2>/dev/null || echo "")
     local webp_path=$(find_library_path "webp")
 
-    # Extract directory paths from full file paths
-    if [[ -n "$jpeg_path" ]]; then
-        jpeg_path=$(dirname "$jpeg_path")
-    fi
-    if [[ -n "$png_path" ]]; then
-        png_path=$(dirname "$png_path")
+    # Add modern image format support (HEIF/AVIF)
+    local heif_path=$(find_library_path "heif")
+    local avif_path=$(find_library_path "avif")
+
+    # If find fails, try pkg-config as fallback
+    if [[ -z "$jpeg_path" ]] && command -v pkg-config >/dev/null 2>&1; then
+        local jpeg_pc=$(pkg-config --libs libjpeg 2>/dev/null | sed 's/-L//g' | awk '{print $1}')
+        if [[ -n "$jpeg_pc" && -d "$jpeg_pc" ]]; then
+            jpeg_path="$jpeg_pc"
+        fi
     fi
 
-    # Add libraries using both --with-lib-dir and --with-lib patterns (original script approach)
+    if [[ -z "$png_path" ]] && command -v pkg-config >/dev/null 2>&1; then
+        local png_pc=$(pkg-config --libs libpng 2>/dev/null | sed 's/-L//g' | awk '{print $1}')
+        if [[ -n "$png_pc" && -d "$png_pc" ]]; then
+            png_path="$png_pc"
+        fi
+    fi
+
+    # Add libraries using both --with-lib-dir and --with-lib patterns
     if [[ -n "$jpeg_path" ]]; then
         gd_config="$gd_config --with-jpeg-dir=$jpeg_path --with-jpeg"
     fi
@@ -643,6 +755,14 @@ configure_gd_linux() {
     fi
     if [[ -n "$webp_path" ]]; then
         gd_config="$gd_config --with-webp-dir=$webp_path"
+    fi
+
+    # Add modern image format support
+    if [[ -n "$heif_path" ]]; then
+        gd_config="$gd_config --with-heif-dir=$heif_path"
+    fi
+    if [[ -n "$avif_path" ]]; then
+        gd_config="$gd_config --with-avif-dir=$avif_path"
     fi
 
     echo "$gd_config"
@@ -661,6 +781,35 @@ get_optimized_make_flags() {
 }
 
 # Create balanced php.ini configuration for universal compatibility
+# Create extension configuration files for shared modules
+create_extension_configs() {
+    local install_path=$1
+    local php_version=$2
+    local major=$(echo "$php_version" | cut -d. -f1)
+    local minor=$(echo "$php_version" | cut -d. -f2)
+
+    echo "🔧 Creating extension configuration files..."
+
+    # PHP 7.4+ shared extensions configuration
+    if [[ "$major" == "7" && "$minor" -ge 4 ]] || [[ "$major" == "8" ]]; then
+        # Create individual .ini files for shared extensions
+
+        # GD extension
+        cat > "$install_path/conf.d/20-gd.ini" << EOF
+; GD Extension Configuration
+extension=gd.so
+EOF
+
+        # ZIP extension
+        cat > "$install_path/conf.d/20-zip.ini" << EOF
+; ZIP Extension Configuration
+extension=zip.so
+EOF
+
+        echo "   ✅ Created extension configs for shared modules"
+    fi
+}
+
 create_basic_php_ini() {
     local install_path=$1
     local major=$(echo "$2" | cut -d. -f1)
@@ -729,6 +878,9 @@ EOF
 
     # Create sessions directory
     mkdir -p "$install_path/conf.d/sessions"
+
+    # Create extension configuration files
+    create_extension_configs "$install_path" "$2"
 
     # Fix SSL certificate verification for HTTPS requests
     setup_ssl_certificates "$install_path"
