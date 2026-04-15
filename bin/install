@@ -456,6 +456,7 @@ get_best_practice_extensions() {
     # ZIP extension will be handled separately for different PHP versions
     # DBA extension will be handled separately to avoid configuration issues
     local extensions="--enable-bcmath \
+        --enable-phar \
         --enable-calendar \
         --enable-exif \
         --enable-fpm \
@@ -497,6 +498,8 @@ get_best_practice_extensions() {
             extensions="$extensions --enable-wddx --with-mhash --with-mysql=mysqlnd --with-xmlrpc"
             # Add soap for older versions (useful for legacy web services)
             extensions="$extensions --enable-soap"
+            # Add LDAP support for legacy PHP versions
+            extensions="$extensions --with-ldap"
             ;;
         "7")
             # PHP 7.x - Modern extensions with legacy compatibility
@@ -530,11 +533,7 @@ get_best_practice_extensions() {
             ;;
         "8")
             # PHP 8.x - Cutting edge modern extensions (no legacy deprecated features)
-            extensions="$extensions --with-openssl --with-sodium --with-pdo-pgsql --enable-intl --enable-soap --with-gettext"
-            # PHP 8.1+ newer features
-            if [[ "$minor" -ge 1 ]]; then
-                extensions="$extensions --with-gmp"
-            fi
+            extensions="$extensions --with-openssl --with-sodium --with-pdo-pgsql --enable-intl --enable-soap --with-gettext --with-gmp"
             # PHP 8.2+ latest features
             if [[ "$minor" -ge 2 ]]; then
                 extensions="$extensions --with-ffi"
@@ -544,6 +543,8 @@ get_best_practice_extensions() {
             extensions="$extensions --with-argon2"  # Argon2 password hashing
             # DBA support - Use system default backend, avoid specifying specific database
             extensions="$extensions --enable-dba"
+            # Add ZIP extension with proper configuration
+            extensions="$extensions $(configure_zip_extension "$php_version")"
             # Note: wddx, mhash, mysql, xmlrpc removed in PHP 8.0 - correctly omitted
             ;;
     esac
@@ -786,7 +787,7 @@ create_extension_configs() {
     local install_path=$1
     local php_version=$2
     local major=$(echo "$php_version" | cut -d. -f1)
-    local minor=$(echo "$php_version" | cut -d. -f2)
+    local minor=${3:-0}  # Default to 0 if not provided
 
     echo "🔧 Creating extension configuration files..."
 
@@ -1037,7 +1038,7 @@ install_php() {
   ) || exit 1
 
   # 4. Create optimized configuration
-  create_basic_php_ini "$install_path" "$(echo "$version" | cut -d. -f1)"
+  create_basic_php_ini "$install_path" "$version"
 
   # 5. Cleanup and completion
   rm -rf "$tmp_download_dir"
