@@ -1,0 +1,173 @@
+name: build-php-artifacts
+
+# 冻结契约的 CI 落地：
+#   legacy  = 封闭集合，默认永不重跑；产物存 Releases 永久保留，构建定义只作历史档案
+#   current = 新 PHP major，push / 每周一自动跑；V1 先留发现逻辑，不产出未经验证的流水线
+#
+# 支持范围（老大 2026-11-08 定）：5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1 及以上。
+# 前 7 个分支全已 EOL，按末版冻结；8.2+ 走 current 通道滚动。
+# 按 OpenSSL ABI 代际只需 3 套 Dockerfile 模板（G1 5.x / G2 7.2-8.0 / G3 8.1+），
+# 详见 manifest.json -> support_matrix。每铺通一个版本才加一行 matrix。
+on:
+  push:
+    paths:
+      - 'versions/**'
+      - 'build/**'
+      - 'scripts/**'
+      - 'manifest.json'
+      - '.github/workflows/build.yml'
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'legacy = rebuild a frozen version; current = new PHP majors'
+        required: true
+        default: 'current'
+        type: choice
+        options: [current, legacy]
+      publish:
+        description: 'attach artifacts to a GitHub Release (permanent retention)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: php-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse invented checksums
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          m = json.load(open('manifest.json'))
+          for v in m['versions']:
+              for arch, a in v['artifacts'].items():
+                  s = a['sha256']
+                  if s is not None and not re.fullmatch(r'[0-9a-f]{64}', s):
+                      sys.exit(f"bad sha256 for {v['version']}/{arch}: {s!r}")
+                  if s is None and a.get('status') != 'not_built':
+                      sys.exit(f"null sha256 must be marked not_built: {v['version']}/{arch}")
+          print('manifest checksum fields OK')
+          PY
+      - name: Manifest lists only published versions in versions.txt
+        run: |
+          python3 - <<'PY'
+          import json, re
+          m = json.load(open('manifest.json'))
+          published = {v['version'] for v in m['versions']
+                       if any(a.get('status') == 'published' for a in v['artifacts'].values())}
+          listed = set()
+          for line in open('versions.txt'):
+              line = line.strip()
+              if line and not line.startswith('#'):
+                  listed.add(line.split()[0])
+          if published != listed:
+              raise SystemExit(f"versions.txt {sorted(listed)} != published {sorted(published)}")
+          print('versions.txt matches published artifacts:', sorted(published))
+          PY
+
+  build-legacy:
+    needs: validate
+    # 默认不跑。老版本「不动也会坏」的解法就是根本不重编。
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'legacy'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 每铺通一个版本才加一行：definition.toml + Dockerfile + 这里。
+        # 待铺（末版号取自 php.net/eol.php，均 EOL 固定）：
+        #   5.6.40 / 7.2.34 / 7.3.33 / 7.4.33 / 8.0.30 / 8.1.34
+        # 复用 3 代模板，不要为每个版本复制一份 Dockerfile。
+        include:
+          - version: 5.4.45
+            dockerfile: build/Dockerfile.5.4
+            artifact: php-5.4.45-linux-x86_64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Refuse placeholder base digest
+        run: |
+          if grep -q 'REPLACE_WITH_DIGEST' '${{ matrix.dockerfile }}'; then
+            echo "Replace the base image digest and mirror it to your own registry first." >&2
+            echo "A tag is not a frozen input; the freeze contract requires a digest." >&2
+            exit 1
+          fi
+      - name: Frozen inputs present and intact
+        run: |
+          test -s keys/jessie.gpg || { echo "keys/jessie.gpg missing (export from Debian archive keyring)"; exit 1; }
+          test -s vendor/SOURCES.json || { echo "run: bash scripts/vendor.sh --write"; exit 1; }
+          python3 - <<'PY'
+          import json, hashlib, pathlib, sys
+          src = json.load(open('vendor/SOURCES.json'))
+          for name, meta in src.items():
+              p = pathlib.Path('vendor') / name
+              if not p.is_file():
+                  sys.exit(f"missing frozen input: {p}")
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != meta['sha256']:
+                  sys.exit(f"sha256 mismatch: {name}")
+          print('frozen inputs verified:', ', '.join(src))
+          PY
+      - name: Build in isolated base, extract artifact
+        run: |
+          docker build --file '${{ matrix.dockerfile }}' \
+                       --tag "asdf-php-build:${{ matrix.version }}" .
+          cid="$(docker create "asdf-php-build:${{ matrix.version }}")"
+          mkdir -p out
+          docker cp "$cid:/out/." out/
+          docker rm "$cid"
+          test -s "out/${{ matrix.artifact }}"
+          test -s "out/${{ matrix.artifact }}.sha256"
+          printf 'built %s  sha256=' '${{ matrix.artifact }}'
+          cat "out/${{ matrix.artifact }}.sha256"
+      - name: Smoke on a clean host path (relocation + extensions)
+        # 构建容器内 php -m 有 redis/swoole 不等于制品可用：CI runner 把
+        # tar.gz 解包到全新路径，正好验证 conf.d / extension_dir 的重定位。
+        # 冒烟不过就不允许 upload / publish。
+        run: env -u PHPRC -u PHP_INI_SCAN_DIR -u ASDF_PHP_PREFIX bash scripts/smoke-artifact.sh "out/${{ matrix.artifact }}" "${{ matrix.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.version }}
+          path: out/*
+          retention-days: 90
+      - name: Archive permanently in Releases
+        if: inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: php-${{ matrix.version }}
+          files: out/*
+          body: |
+            Frozen legacy build. Not rebuilt automatically.
+            See manifest.json for the safety label (5.4 = INSECURE / offline-only).
+            Update manifest sha256 + status and versions.txt after publishing.
+
+  build-current:
+    needs: validate
+    if: github.event_name != 'workflow_dispatch' || inputs.channel == 'current'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover current definitions
+        id: plan
+        run: |
+          mkdir -p versions/current
+          n="$(find versions/current -maxdepth 1 -name '*.toml' | wc -l | tr -d ' ')"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+      - name: V1 placeholder
+        run: |
+          if [ '${{ steps.plan.outputs.count }}' = '0' ]; then
+            echo "versions/current/ empty: add one definition.toml per new PHP major."
+            echo "current channel starts at 8.2 (see manifest.json -> support_matrix / current_channel)."
+          else
+            echo "current-channel matrix build is intentionally not implemented in V1."
+            echo "Ship the 5.4 legacy chain first, then add the G3 matrix here (OpenSSL 3.x base)."
+          fi

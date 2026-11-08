@@ -1,0 +1,27 @@
+asdf-php
+Copyright 2026 x-rush
+
+This product includes software developed as part of the asdf PHP plugin
+lineage (asdf-community/asdf-php and derivatives), licensed under the
+Apache License, Version 2.0.
+
+The prebuilt artifacts distributed through this repository's Releases bundle
+third-party components, each under its own license:
+
+  PHP                     The PHP License, Version 3.01
+  OpenSSL 1.0.2u          Apache License 2.0 (OpenSSL 3.0+ dual-licensed;
+                          this artifact is pinned to the pre-3.0 release,
+                          which is covered by the OpenSSL License and the
+                          original SSLeay license)
+  bison 2.7               GNU General Public License, Version 3
+  redis (php extension)   PHP License 3.01
+  swoole                  Apache License 2.0
+  Debian jessie base      various free software licenses; see the
+                          debian:jessie image manifest
+
+Source tarballs for the pinned build inputs, and their SHA256 sums, are
+recorded in vendor/SOURCES.json on the build-inputs branch. Build
+definitions listing exact versions live in versions/<version>.toml.
+
+Nothing in this repository relicenses any bundled component. If you
+redistribute an artifact, keep this NOTICE and the upstream licenses with it.

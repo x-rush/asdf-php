@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "repository": "x-rush/asdf-php",
+  "artifact_base": "https://github.com/x-rush/asdf-php/releases/download",
+  "artifact_url_template": "{base}/php-{version}/php-{version}-{os}-{arch}.tar.gz",
+  "platforms": {
+    "published": ["linux-x86_64"],
+    "in_progress": ["linux-arm64", "darwin-x86_64", "darwin-arm64"],
+    "policy": "bin/install refuses any platform not listed in published, before downloading anything, and prints what is available. This list is the single source of truth: bin/install's SUPPORTED variable and the README 'Platform support' table must both match it, and scripts/test.sh T3e asserts that they do.",
+    "darwin_caveat": "macOS builds cannot bundle system libraries the way Linux can: libSystem and libc++ are supplied by the OS, so a macOS artifact is tied to the macOS version it was built on and cannot be made fully self-contained. Support will be scoped accordingly."
+  },
+  "checksum_policy": "sha256 must be a 64-char lowercase hex string or null. null means NOT BUILT. Never invent a checksum.",
+  "channels": {
+    "legacy": "Frozen closed set. Artifacts are archived permanently in Releases and are never rebuilt on push; rebuild only via workflow_dispatch.",
+    "current": "New PHP majors. One definition.toml per version, rebuilt on upstream changes."
+  },
+  "support_matrix": {
+    "decided_by": "Scope frozen 2026-11-08: support 5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1+; no unbounded generalization",
+    "policy": "6 个 EOL 分支按末版冻结成闭集，编一次、制品存 Releases 永久保留、定义降级为历史档案；8.1 及以上由 current 通道随上游滚动。维护面只剩未来版本。",
+    "scope": {
+      "legacy_frozen": ["5.4.45", "5.6.40", "7.2.34", "7.3.33", "7.4.33", "8.0.30", "8.1.34"],
+      "current_from": "8.2",
+      "excluded": ["5.3 及以下", "5.5", "7.0", "7.1"]
+    },
+    "sources": [
+      "php.net/eol.php Unsupported Branches — 每个 EOL 分支的末版号（2026-11-08 核对）：5.4.45 / 5.6.40 / 7.2.34 / 7.3.33 / 7.4.33 / 8.0.30 / 8.1.34",
+      "php.net/manual/openssl.requirements — PHP 7.1-8.0 需 OpenSSL >=1.0.1；>=8.1 需 >=1.0.2；>=8.4 需 >=1.1.1 且 <4.0",
+      "bugs.php.net #81540 — OpenSSL 3.0.0 is not supported prior to 8.1.0；官方明确不 backport 到旧分支"
+    ],
+    "generations": [
+      {
+        "id": "G1",
+        "php": ["5.4.45", "5.6.40"],
+        "openssl": "1.0.2u（vendor 冻结，PHP 5.x 无法编 1.1+）",
+        "base": "debian:jessie（digest 已冻结在 versions/5.4.45.toml）",
+        "dockerfile": "build/Dockerfile.5.4 → 铺 5.6 时泛化为 Dockerfile.5.x",
+        "status": "5.4.45 published 2026-11-08 (x-rush/asdf-php Releases tag php-5.4.45, branch v2)；5.6.40 planned",
+        "notes": "bison 2.7 / archive.debian.org / --with-libdir multiarch；SSL isolation contract：自建 OpenSSL 只服务 ext/openssl，libpq 与 openssl 版 libcurl 一律不进链接命令"
+      },
+      {
+        "id": "G2",
+        "php": ["7.2.34", "7.3.33", "7.4.33", "8.0.30"],
+        "openssl": "1.1.1w（系统库或 vendor 冻结；绝不能用 3.0）",
+        "base": "debian:bullseye（系统 1.1.1w）；若 7.2 在 gcc 10 下编不过则退到 buster",
+        "dockerfile": "build/Dockerfile.7.2-8.0（待建，共用一套模板）",
+        "status": "planned",
+        "notes": "7.4+ 的 mbstring 需 libonig-dev、密码哈希需 libargon2-dev；7.2/7.3 内建 oniguruma。OpenSSL 3.0 官方不 backport（#81540），这是 8.0/8.1 必须分代的原因"
+      },
+      {
+        "id": "G3",
+        "php": ["8.1.34", "8.2.x", "8.3.x", "8.4.x", "8.5.x", "future majors"],
+        "openssl": "3.x（系统库）",
+        "base": "debian:bookworm 或更新",
+        "dockerfile": "build/Dockerfile.current（待建）",
+        "status": "planned / rolling",
+        "notes": "8.4+ 要求 OpenSSL >=1.1.1 且 <4.0。8.1.34 已于 2025-12-31 EOL，故作为闭集末版一并冻结；current 通道负责 8.2+ 的滚动"
+      }
+    ],
+    "template_count": 3,
+    "template_rationale": "按 OpenSSL ABI 代际切成 3 套 Dockerfile 模板即可覆盖全部支持范围，而不是每个版本写一个。G1 已存在，G2/G3 待 5.4 全绿后按同一契约铺开。",
+    "extension_tiers": {
+      "_source": "WSL Surý apt 实测（2026-11-08 mise 迁移验收日志），作为分档锚点；未列出的中间版本待 vendor 时核实",
+      "redis": {"5.x": "2.2.8（phpredis 2.x 末分支）", "7.4": "6.3.0", "8.0": "6.3.0", "8.5": "6.3.0"},
+      "swoole": {"5.x": "1.10.5（1.x 末版）", "7.4": "4.8.13", "8.0": "5.1.8", "8.5": "6.2.3"}
+    },
+    "caveats": [
+      "G2/G3 的 base、dockerfile、扩展版本均为规划，本轮未生成任何 definition.toml / Dockerfile，也未编造 sha256 或 base digest",
+      "2026-10 官方对 7.4 / 8.0 / 8.1 等 EOL 分支发过源码级安全 backport（PHP2Shell）。冻结源选型时需决定用 museum 末版 tarball 还是官方 backport；制品默认带 INSECURE / offline-only 标签",
+      "planned 不等于 published：每铺通一个版本才加一行 CI matrix、一条 versions.txt、一份 manifest versions 条目"
+    ]
+  },
+  "current_channel": {
+    "from": "8.2",
+    "policy": "versions/current/ 下每个 PHP major 一个 definition.toml，随上游 patch 变化重建",
+    "status": "5.4.45 legacy 链路已跑通并发布；current 矩阵构建待铺（8.2+）"
+  },
+  "versions": [
+    {
+      "version": "5.4.45",
+      "channel": "legacy",
+      "definition": "versions/5.4.45.toml",
+      "dockerfile": "build/Dockerfile.5.4",
+      "safety": {
+        "patched": false,
+        "network_policy": "offline-only",
+        "label": "INSECURE",
+        "reason": "PHP 5.4 has no upstream or third-party security fixes; treat as an offline migration tool only."
+      },
+      "extensions": {
+        "swoole": "1.10.5",
+        "redis": "2.2.8"
+      },
+      "artifacts": {
+        "linux-x86_64": {
+          "name": "php-5.4.45-linux-x86_64.tar.gz",
+          "sha256": "21b9a98ab9cda5a23d65cd36e8be8b9a4548d05473e668a623eb45f59302f3b4",
+          "status": "published"
+        }
+      }
+    }
+  ],
+  "planned_legacy": ["5.6.40", "7.2.34", "7.3.33", "7.4.33", "8.0.30", "8.1.34"],
+  "current": [],
+  "notes": [
+    "extensions.redis = 2.2.8: phpredis 2.x is the last branch for PHP < 7 (official 2.2.8 release notes). phpredis 6.3.0 requires PHP >= 7.4.0 per PECL, so it cannot be reused for 5.4. Verified 2026-11-08.",
+    "extensions.swoole = 1.10.5 is the last 1.x release (2018-05-14). L2 2026-11-08 实测：在 PHP 5.4.45 上 phpize / configure / make 全通过，swoole.so 与 redis.so 都已装入制品（构建日志 #10 的 php -m 同时列出两者）。Dockerfile 仍保留 soft-fail 兜底，但 smoke 已把扩展缺失升级为硬 FAIL。",
+    "keys/jessie.gpg, vendor/*.tar.gz and vendor/SOURCES.json are produced once by scripts/vendor.sh --write (including dearmoring the Debian archive key) and then committed as frozen inputs; CI verifies every sha256 against vendor/SOURCES.json.",
+    "base digest resolved 2026-11-08 from WSL 'docker buildx imagetools inspect debian:jessie': sha256:32ad5050caffb2c7e969dac873bce2c370015c2256ff984b70c1c08b3a2816a0. Docker Hub was unreachable from the Windows host, so this value was not independently re-verified there. Mirroring to a self-hosted registry (GC protection) is a V1 wrap-up step, not an L2 prerequisite.",
+    "artifact layout (2026-11-08): self-contained. jessie-only sonames are enumerated via ldd and bundled into lib/; bin/php is a wrapper setting LD_LIBRARY_PATH to that dir, with the real ELF at libexec/php.bin; the glibc family is deliberately excluded so the host's newer libc is used. curl links GnuTLS (libcurl4-gnutls-dev) so it cannot collide with the vendored OpenSSL 1.0.2u over the shared libssl.so.1.0.0 soname.",
+    "SSL isolation contract (2026-11-08 L2): the vendored OpenSSL 1.0.2u serves ext/openssl only. Debian's libssl.so.1.0.0 exports versioned SSL_*@OPENSSL_1.0.0 symbols that upstream 1.0.2u lacks, so any jessie system library needing them must stay out of the final link line. Two measured cases: libcurl (switched to GnuTLS) and libpq (pdo_pgsql and libpq-dev removed after 40+ undefined references at link time). Legacy business projects are MySQL-only, and this is an offline migration tool, so trimming the frozen feature set beats mixing two SSL chains. scripts/test.sh T3b guards this.",
+    "support scope frozen 2026-11-08: 5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1+. All concrete branches are already EOL, so their last releases become a 7-version frozen closed set; 8.2+ rolls through the current channel. 3 Dockerfile templates (G1 5.x / G2 7.2-8.0 / G3 8.1+) cover the whole range. See support_matrix for sources and per-generation constraints. No new definition.toml, Dockerfile, sha256 or digest was invented in this change.",
+    "relocation fix (2026-11-08 L2): the first green build shipped redis.so, swoole.so and their conf.d ini files, yet smoke reported both extensions NOT loaded. Root cause was NOT a build failure: --with-config-file-scan-dir and extension_dir were compiled as absolute /opt/php/5.4.45 paths, so an unpacked artifact never scanned conf.d and could not resolve the .so files. scripts/relocate.sh now injects PHPRC, PHP_INI_SCAN_DIR and ASDF_PHP_PREFIX via bin/php / php-cgi wrappers, writes conf.d/00-relocatable.ini with extension_dir=${ASDF_PHP_PREFIX}/... (PHP 5.4 supports ${VAR} ini interpolation: Zend/zend_ini_parser.y:357 cfg_var_ref), and strips hardcoded prefixes from phpize / php-config / pear / pecl / peardev / phar. Dockerfile.5.4 runs a real relocation self-check (prefix moved to /opt/relocated, original path physically removed) before packaging; smoke-artifact.sh and CI turn relocation + extension checks into hard gates. Published 2026-11-08 as x-rush/asdf-php Releases tag php-5.4.45 (target branch v2) with sha256 21b9a98ab9cda5a23d65cd36e8be8b9a4548d05473e668a623eb45f59302f3b4; manifest status and versions.txt were updated only after the upload succeeded."
+  ]
+}

@@ -1,0 +1,24 @@
+# L2 build outputs live in GitHub Releases, not in git.
+out/
+l2-*.log
+
+# local smoke / regression scratch dirs
+.asdf-php-smoke.*/
+.smoke-reg/
+.runcheck/
+.smoketest/
+
+# Pinned build inputs are NOT in this branch. `asdf plugin add` clones this
+# branch, so anything here is downloaded by every user at install time — and
+# they never need the sources, only the prebuilt tarball. The archived copies
+# live on the build-inputs branch; scripts/vendor.sh re-fetches and verifies
+# them against vendor/SOURCES.json whenever a local build actually needs them.
+/vendor/*
+!/vendor/SOURCES.json
+/keys/
+
+# partial vendor downloads (scripts/vendor.sh)
+*.part
+
+.DS_Store
+Thumbs.db

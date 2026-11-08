@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# asdf-php v2 / 版本清单来自制品仓库，不再靠插件枚举上游源码 tag
+set -euo pipefail
+
+# v2 lives on branch "v2" (master keeps the v1 source-compiling plugin), so the
+# published-version list must be read from that branch, not from master.
+url="${ASDF_PHP_VERSIONS_URL:-https://raw.githubusercontent.com/x-rush/asdf-php/v2/versions.txt}"
+local_list="$(dirname "$0")/../versions.txt"
+
+# versions.txt 允许注释与空行；只输出 Releases 上真实存在的版本。
+# 用 awk 而非 grep -v：pipefail 下 grep 无匹配会返回 1，导致空清单被误判为失败。
+filter() { awk '!/^[[:space:]]*#/ && NF {print $1}'; }
+
+if out="$(curl -fsSL --retry 2 "$url" 2>/dev/null)" && [ -n "$out" ]; then
+  printf '%s\n' "$out" | filter
+elif [ -f "$local_list" ]; then
+  filter < "$local_list"
+else
+  echo "asdf-php: cannot fetch versions.txt" >&2
+  exit 1
+fi

@@ -1,0 +1,166 @@
+# 刻意不声明 BuildKit frontend：本文件只用经典 Dockerfile 语法，全局 ARG +
+# FROM 由内置 frontend 即可处理。frontend 声明会额外去 Docker Hub 拉一个未冻结
+# 的 :1 tag（破坏「冻结输入」契约），并在 WSL 里先触发 credential helper 解析，
+# 构建还没开始就挂在 "error getting credentials"。
+# asdf-php v2 / 最难样本：PHP 5.4.45
+# 状态：L2 实机迭代中。用于打通 jessie + archive.debian.org + bison 2.7 + OpenSSL 1.0.2u 全链。
+# 契约：构建期零外联。所有源码/依赖由 CI 从 vendor/ 注入；base 用 digest，不用 tag。
+# digest 取自 WSL 内 `docker buildx imagetools inspect debian:jessie`（2026-11-08）。
+# V1 先用 Docker Hub 的真实 digest 打通 L2；收尾时再 mirror 到自建 registry
+# （防上游 GC 删老镜像），届时把本行换成 ghcr.io/... 的 digest 即可。
+ARG BASE_IMAGE=debian:jessie@sha256:32ad5050caffb2c7e969dac873bce2c370015c2256ff984b70c1c08b3a2816a0
+FROM ${BASE_IMAGE}
+
+# 冻结契约（2026-11-08 L2 实测，两连坑同一根因）：自建 OpenSSL 1.0.2u 只服务
+# ext/openssl，绝不与 jessie 系统库共享链接空间。Debian 给 libssl.so.1.0.0 打了
+# symbol version script（SSL_*@OPENSSL_1.0.0），而上游 1.0.2u 不带版本节点；
+# 一旦 --with-openssl=<prefix> 把 -L/opt/toolchain/... 注入链接搜索路径，链接器
+# 优先选中自建库，系统库的版本化引用就全部变成 undefined reference。
+# 已实测两例：libcurl（换 GnuTLS 后端物理隔离）、libpq（本版不编 pgsql 驱动）。
+# 后续加新版本时同理：宁可缩减冻结制品的功能集，也不要混进两套 OpenSSL。
+#
+# curl 扩展走 GnuTLS 后端（libcurl4-gnutls-dev），刻意不用 libcurl4-openssl-dev：
+# jessie 的 libcurl 由系统 OpenSSL 1.0.1 提供，soname 是 libssl.so.1.0.0；PHP 5.4
+# 自己用的 OpenSSL 1.0.2u 也是同一个 soname。一旦 --with-openssl=<prefix> 把
+# -L/opt/toolchain/... 注入链接搜索路径，链接器就拿自建 libssl 去满足 libcurl 的
+# DT_NEEDED，符号版本对不上 → ext/curl/config.m4 的
+# PHP_CHECK_LIBRARY(curl,curl_easy_perform) 失败（"There is something wrong"）。
+# 换 SSL 后端是物理隔离，比改 soname / 静态化 OpenSSL 的副作用都小。
+COPY keys/jessie.gpg /etc/apt/trusted.gpg.d/jessie.gpg
+# archive.debian.org 的 jessie 签名密钥早已过期（实测 KEYEXPIRED
+# 1587841717 / 1668892417 / 1747766513）：apt-get update 会放行，但 install
+# 会把 84 个包全判为 "cannot be authenticated" 并以 exit 100 拒绝。
+# 只在这个一次性构建容器里对该源跳过签名校验；不进入任何运行时镜像，
+# 制品的可复现性另由 base digest + vendor/ 的 sha256 锁定，不依赖 apt 签名。
+RUN printf '%s\n' \
+      'deb [trusted=yes] http://archive.debian.org/debian jessie main' \
+      'deb [trusted=yes] http://archive.debian.org/debian-security jessie/updates main' \
+      > /etc/apt/sources.list \
+ && printf '%s\n' \
+      'Acquire::Check-Valid-Until "false";' \
+      'Acquire::AllowInsecureRepositories "true";' \
+      > /etc/apt/apt.conf.d/99-archive \
+ && apt-get update \
+ && apt-get install -y --allow-unauthenticated --no-install-recommends \
+      build-essential autoconf re2c pkg-config file \
+      libxml2-dev libcurl4-gnutls-dev libjpeg-dev libpng-dev \
+      libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY vendor/ /opt/vendor/
+
+# PHP 5.4 的 PHP_SETUP_OPENSSL 在 $prefix/$PHP_LIBDIR 下找 libssl.(a|so)：
+# 传了 --with-libdir=lib/x86_64-linux-gnu，它就查
+# $prefix/lib/x86_64-linux-gnu/libssl.so。而 OpenSSL 1.0.2u 默认装到
+# $prefix/lib（Configure 见 $prefix/lib64 不存在即把 multilib 清空），
+# 两边对不上正是 "Cannot find OpenSSL's libraries" 的根因。
+# 用官方 --libdir 把 OpenSSL 库装到 PHP 会去找的那个子目录，两侧对齐。
+# configure 的驱动集刻意只到 MySQL：jessie 的 libpq.so 需要 Debian 版 OpenSSL
+# 的版本化符号（见文件头冻结契约），实测在 make 链接阶段炸出 40+ 条
+# SSL_*@OPENSSL_1.0.0 undefined reference。业务侧是 MySQL，且这是 offline
+# 迁移工具，不值得为 pgsql 驱动引入第二套 SSL 链。libpq-dev 也一并从 apt 移除。
+# 下面两个 test -r 是 fail-fast 断言，避免再次靠猜路径排错。
+RUN set -eux; \
+    cd /opt/vendor; \
+    tar xzf bison-2.7.tar.gz; cd bison-2.7; \
+      ./configure --prefix=/opt/toolchain; make -j"$(nproc)"; make install; \
+    cd /opt/vendor; \
+    tar xzf openssl-1.0.2u.tar.gz; cd openssl-1.0.2u; \
+      ./Configure --prefix=/opt/toolchain/openssl-1.0.2u \
+        --libdir=lib/x86_64-linux-gnu -fPIC shared linux-x86_64; \
+      make -j"$(nproc)"; make install_sw; \
+    cd /opt/vendor; \
+    tar xzf php-5.4.45.tar.gz; cd php-5.4.45; \
+      PATH=/opt/toolchain/bin:$PATH ./buildconf --force; \
+      test -r /opt/toolchain/openssl-1.0.2u/include/openssl/evp.h; \
+      test -r /opt/toolchain/openssl-1.0.2u/lib/x86_64-linux-gnu/libssl.so; \
+      ./configure --prefix=/opt/php/5.4.45 \
+        --with-config-file-path=/opt/php/5.4.45/etc \
+        --with-config-file-scan-dir=/opt/php/5.4.45/etc/conf.d \
+        --with-libdir=lib/x86_64-linux-gnu \
+        --with-openssl=/opt/toolchain/openssl-1.0.2u \
+        --enable-mbstring --enable-zip --with-curl --with-gd \
+        --with-mysql --with-mysqli --with-pdo-mysql \
+        || { echo "=== configure failed; config.log tail ==="; tail -n 200 config.log; exit 1; }; \
+      make -j"$(nproc)"; make install; \
+    mkdir -p /opt/php/5.4.45/etc/conf.d
+
+# 扩展一律用 vendor 源码 + 该版本自带的 phpize/php-config 编译，保证 ABI 对齐。
+# ini 写进 conf.d，制品解压即可用；redis 2.2.8 是 PHP < 7 的最后分支（必编），
+# swoole 1.10.5 在 5.4 上的 configure 尚待 L2 实机确认，失败只跳过、不毁掉制品。
+RUN set -eux; \
+    export PATH="/opt/php/5.4.45/bin:$PATH"; \
+    extdir="$(php-config --extension-dir)"; mkdir -p "$extdir"; \
+    # 显式 || return 1：swoole 走 `if ! build_ext ...`，bash 在该条件上下文里
+    # 会抑制 errexit，没有显式返回就会「假成功」并写出一个不存在的 swoole.ini。
+    build_ext() { \
+      name="$1"; tgz="$2"; mod="$3"; \
+      cd /opt/vendor || return 1; rm -rf "$name"; mkdir "$name" || return 1; \
+      tar xzf "$tgz" -C "$name" --strip-components=1 || return 1; \
+      cd "$name" || return 1; \
+      phpize || return 1; \
+      ./configure --with-php-config=/opt/php/5.4.45/bin/php-config || return 1; \
+      make -j"$(nproc)" || return 1; make install || return 1; \
+      printf 'extension=%s.so\n' "$mod" > "/opt/php/5.4.45/etc/conf.d/$mod.ini" || return 1; \
+    }; \
+    build_ext redis redis-2.2.8.tgz redis || exit 1; \
+    if ! build_ext swoole swoole-1.10.5.tgz swoole; then \
+      echo "WARN: swoole 1.10.5 did not build on PHP 5.4; artifact ships without it"; \
+      rm -f /opt/php/5.4.45/etc/conf.d/swoole.ini; \
+    fi; \
+    php -m | grep -i -E 'redis|swoole' || true
+
+# 制品自包含（A 方案）：只打包 /opt/php/5.4.45 的话，bin/php 动态链接的是 jessie
+# 私有 soname（libpng12.so.0 / libmcrypt.so.4 / libzip.so.2 / libicu*.so.52 /
+# libssl.so.1.0.0 ...），换台宿主机就起不来。这里用 ldd 枚举真实依赖随包带走，
+# 不靠人手维护清单；bin/php 换成设 LD_LIBRARY_PATH 的 wrapper，真实 ELF 放
+# libexec/php.bin，制品解压到任意路径都能跑（符合 offline-only 定位）。
+# glibc 家族刻意不打包：宿主机版本更新，塞旧 libc 反而会炸。
+#
+# 重定位（2026-11-08 L2 首次全绿后的实测修复）：只随包带走 soname 还不够。
+# 构建容器内 php -m 有 redis/swoole，解包后 smoke 却报 NOT loaded —— 因为
+# --with-config-file-scan-dir 与 extension_dir 都是 /opt/php/5.4.45 的绝对路径。
+# scripts/relocate.sh 用 PHPRC / PHP_INI_SCAN_DIR / conf.d/00-relocatable.ini
+# 里的 ${ASDF_PHP_PREFIX} 插值把二者改成解包后的路径，并把 phpize/php-config/
+# pear/phar 的硬编码前缀一并抹掉。COPY 放在最后一层之前，前面的 PHP 编译层
+# 仍可命中 BuildKit 缓存。
+COPY scripts/relocate.sh /opt/relocate.sh
+
+# 最后的 RUN 会做一次「真实重定位自检」：把 prefix 搬到 /opt/relocated 并
+# 删掉原 /opt/php/5.4.45，再 php -m 验 redis/swoole。原路径还在时这个测试
+# 会假通过（extension_dir 仍指回构建目录），所以必须物理移除。
+RUN set -eux; \
+    prefix=/opt/php/5.4.45; \
+    mkdir -p "$prefix/lib" "$prefix/libexec" /out; \
+    export LD_LIBRARY_PATH="/opt/toolchain/openssl-1.0.2u/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; \
+    find "$prefix" -type f \( -name 'php' -o -name 'php-cgi' -o -name '*.so' \) -print > /tmp/elfs; \
+    : > /tmp/needed; \
+    while IFS= read -r f; do \
+      ldd "$f" 2>/dev/null | awk '/=> \// {print $3}' >> /tmp/needed; \
+    done < /tmp/elfs; \
+    sort -u /tmp/needed \
+      | grep -vE '/(ld-linux|libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libresolv\.so|libnsl\.so|libutil\.so|libanl\.so|libcrypt\.so|libgcc_s\.so|libstdc\+\+\.so)' \
+      > /tmp/copy || true; \
+    while IFS= read -r so; do \
+      [ -r "$so" ] || { echo "FATAL: unresolved runtime lib $so"; exit 1; }; \
+      cp -L -- "$so" "$prefix/lib/$(basename "$so")"; \
+    done < /tmp/copy; \
+    test -n "$(ls -A "$prefix/lib")"; \
+    printf 'bundled shared libraries: %s\n' "$(find "$prefix/lib" -type f | wc -l)"; \
+    ls -1 "$prefix/lib" | head -40 || true; \
+    sh /opt/relocate.sh "$prefix"; \
+    mv "$prefix" /opt/php/_build; \
+    cp -a /opt/php/_build /opt/relocated; \
+    rm -rf /opt/php/_build; \
+    /opt/relocated/bin/php -v; \
+    /opt/relocated/bin/php -m | grep -qi '^redis$' \
+      || { echo "FATAL: redis not loaded after relocation (extension_dir broken)"; exit 1; }; \
+    /opt/relocated/bin/php -m | grep -qi '^swoole$' \
+      || { echo "FATAL: swoole not loaded after relocation (extension_dir broken)"; exit 1; }; \
+    test "$(/opt/relocated/bin/php-config --prefix)" = '/opt/relocated' \
+      || { echo "FATAL: php-config still points at the build prefix"; exit 1; }; \
+    mv /opt/relocated "$prefix"; \
+    "$prefix/bin/php" -v; \
+    tar -czf /out/php-5.4.45-linux-x86_64.tar.gz -C "$prefix" . \
+ && sha256sum /out/php-5.4.45-linux-x86_64.tar.gz \
+      | awk '{print $1}' > /out/php-5.4.45-linux-x86_64.tar.gz.sha256

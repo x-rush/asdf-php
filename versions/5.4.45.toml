@@ -1,0 +1,73 @@
+# asdf-php v2 / frozen build definition
+# 老版本冻结契约：产物一旦发布到 Releases，本文件降级为历史档案，
+# 不再是运行时依赖。之后的维护只发生在 versions/current/ 目录。
+version = "5.4.45"
+channel = "legacy"
+safety  = { patched = false, network_policy = "offline-only" }
+
+[source]
+# 取自 museum.php.net/php5/php-5.4.45.tar.gz，首次 vendor 后固定在自建 registry
+path   = "vendor/php-5.4.45.tar.gz"
+sha256 = "25bc4723955f4e352935258002af14a14a9810b491a19400d76fcdfa9d04b28f"
+
+[base]
+# 必须用 digest，不用 tag。当前取自 Docker Hub debian:jessie 的真实 digest
+# （2026-11-08 `docker buildx imagetools inspect`）；V1 收尾时 mirror 到自建
+# registry 以防上游 GC，届时同步替换本行与 Dockerfile 的 BASE_IMAGE。
+image             = "debian:jessie@sha256:32ad5050caffb2c7e969dac873bce2c370015c2256ff984b70c1c08b3a2816a0"
+apt_snapshot      = "http://archive.debian.org/debian jessie main"
+keyring           = "keys/jessie.gpg"
+check_valid_until = false
+
+[toolchain]
+# 全部走 vendor/，构建期零外联 openssl.org / GNU ftp
+openssl = { version = "1.0.2u", path = "vendor/openssl-1.0.2u.tar.gz", sha256 = "ecd0c6ffb493dd06707d38b14bb4d8c2288bb7033735606569d8f90f89669d16" }
+bison   = { version = "2.7",    path = "vendor/bison-2.7.tar.gz",      sha256 = "19bbe7374fd602f7a6654c131c21a15aebdc06cc89493e8ff250cb7f9ed0a831" }
+gcc     = "jessie-default"
+# PHP 5.4 的 PHP_SETUP_OPENSSL 去 $prefix/$PHP_LIBDIR 找 libssl.(a|so)；必须与
+# [configure] 的 --with-libdir 一致，OpenSSL 编译用 ./Configure --libdir 对齐。
+openssl_libdir = "lib/x86_64-linux-gnu"
+
+[configure]
+# 冻结契约：自建 OpenSSL 1.0.2u 只服务 ext/openssl，不得与任何 jessie 系统库
+# 共享链接空间。Debian 的 libssl.so.1.0.0 带 symbol version script
+# （SSL_*@OPENSSL_1.0.0），上游 1.0.2u 不带版本节点；--with-openssl=<prefix>
+# 注入的 -L 会让链接器优先选自建库，系统库的版本化引用全部失败。
+# ① apt 用 libcurl4-gnutls-dev 而非 libcurl4-openssl-dev：curl 扩展走 GnuTLS
+#    物理隔离，避开 PHP_CHECK_LIBRARY(curl,curl_easy_perform) 失败。
+# ② 不编 pgsql 驱动、apt 不装 libpq-dev：jessie libpq.so 在 make 链接阶段
+#    实测炸出 40+ 条 SSL_*@OPENSSL_1.0.0 undefined reference（2026-11-08）。
+#    业务侧是 MySQL，offline 迁移工具不需要 pgsql，缩减功能集优于双 SSL 链。
+# scripts/test.sh 的 T3b 会守住这条契约，防止后人手滑加回来。
+flags = [
+  # jessie 是 multiarch，库都在 /usr/lib/x86_64-linux-gnu；PHP 5.x 默认只找
+  # /usr/lib 与 /usr/lib64，不指定会让 --with-gd / --enable-zip 找不到 libpng 等。
+  # 该值同时决定 openssl 的库探测路径，见 [toolchain].openssl_libdir。
+  "--with-libdir=lib/x86_64-linux-gnu",
+  "--with-openssl=/opt/toolchain/openssl-1.0.2u",
+  "--enable-mbstring", "--enable-zip", "--with-curl", "--with-gd",
+  "--with-mysql", "--with-mysqli", "--with-pdo-mysql",
+]
+
+[extensions]
+# swoole 1.x 覆盖 PHP 5.4-7.2（官方 SUPPORTED.md，2026-11-07 核实）。
+# 1.10.5 是 1.x 末版（2018-05-14）；2026-11-08 L2 实机确认在 5.4.45 上
+# phpize / configure / make 全通过，构建容器 php -m 同时列出 redis 与 swoole。
+# Dockerfile 仍保留 soft-fail 兜底，但 smoke 把扩展缺失升级为硬 FAIL。
+swoole = "1.10.5"
+# phpredis 2.2.8 release 原文："intended for versions of php older than 7"
+# （2.x 是 PHP 5.x 最后分支）；6.3.0 的 PECL 依赖明确要求 PHP >= 7.4.0，
+# 绝不能照搬 8.x 用的 6.x。2026-11-08 核实。
+redis  = "2.2.8"
+
+[artifact]
+name = "php-5.4.45-linux-x86_64.tar.gz"
+# 制品自包含：构建末尾用 ldd 枚举 jessie 私有 soname 打进 lib/（排除 glibc 家族），
+# bin/php 换成设 LD_LIBRARY_PATH 的 wrapper、真实 ELF 在 libexec/php.bin，
+# 解压到任意路径即可运行。smoke-artifact.sh 会硬校验「带 lib/ 后无 not found」。
+# 可重定位：scripts/relocate.sh 用 PHPRC / PHP_INI_SCAN_DIR / ASDF_PHP_PREFIX
+# 覆盖编译期绝对路径，conf.d/00-relocatable.ini 把 extension_dir 指向解包目录，
+# bin/phpize / php-config / pear / phar 的硬编码前缀一并抹掉。否则构建容器内
+# php -m 有 redis/swoole、解包后却一个都不加载（2026-11-08 L2 实测坑）。
+# Dockerfile.5.4 打包前会把 prefix 搬到陌生路径、删掉原路径自检扩展加载。
+# 同名 .sha256 与 manifest.json 一并发布；插件只认这两个

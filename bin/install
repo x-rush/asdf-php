@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# asdf-php v2 / 瘦插件
+# 契约不变：asdf 传入 ASDF_INSTALL_VERSION / ASDF_INSTALL_PATH，插件把 bin/php 放进该目录。
+# 变化：插件不再编译、不再探测系统库、不再拼 configure。
+set -euo pipefail
+
+: "${ASDF_INSTALL_VERSION:?asdf did not set ASDF_INSTALL_VERSION}"
+: "${ASDF_INSTALL_PATH:?asdf did not set ASDF_INSTALL_PATH}"
+
+v="$ASDF_INSTALL_VERSION"
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$(uname -m)" in
+  x86_64|amd64)  arch="x86_64" ;;
+  aarch64|arm64) arch="arm64" ;;
+  *) echo "asdf-php: unsupported CPU $(uname -m)" >&2; exit 1 ;;
+esac
+
+# Platforms that actually have published artifacts. Keep in sync with
+# manifest.json -> platforms and README -> Platform support; scripts/test.sh
+# asserts all three agree. Checking here turns a bare HTTP 404 into a
+# message that says what is available instead of what failed.
+SUPPORTED="linux-x86_64"
+plat="${os}-${arch}"
+case " $SUPPORTED " in
+  *" $plat "* ) ;;
+  *)
+    echo "asdf-php: no prebuilt artifact for ${plat}" >&2
+    echo "asdf-php: currently published: ${SUPPORTED}" >&2
+    echo "asdf-php: see the Platform support table in README.md" >&2
+    echo "asdf-php: nothing was downloaded; your existing installs are untouched" >&2
+    exit 1
+    ;;
+esac
+
+base="${ASDF_PHP_RELEASE_BASE:-https://github.com/x-rush/asdf-php/releases/download}"
+name="php-${v}-${os}-${arch}.tar.gz"
+url="${base}/php-${v}/${name}"
+
+work="$(mktemp -d)"
+# Cleanup must never change the install result (some hosts restrict temp
+# deletion). Everything is verified before this trap runs.
+trap 'rm -rf -- "$work" 2>/dev/null || true' EXIT
+
+curl -fL --retry 3 -o "$work/$name" "$url"
+curl -fL --retry 3 -o "$work/$name.sha256" "$url.sha256"
+
+expected="$(awk 'NR==1 {print $1}' "$work/$name.sha256")"
+actual="$(sha256sum "$work/$name" | awk '{print $1}')"
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "asdf-php: sha256 mismatch for $name" >&2
+  exit 1
+fi
+
+mkdir -p "$ASDF_INSTALL_PATH"
+tar -xzf "$work/$name" -C "$ASDF_INSTALL_PATH"
+if [ ! -x "$ASDF_INSTALL_PATH/bin/php" ]; then
+  echo "asdf-php: artifact has no bin/php" >&2
+  exit 1
+fi
+
+"$ASDF_INSTALL_PATH/bin/php" -v | head -1
+echo "asdf-php: $v installed from frozen artifact; see manifest.json for EOL/security status" >&2

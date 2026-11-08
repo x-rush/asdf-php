@@ -1,0 +1,17 @@
+# asdf-php v2 / published versions
+# Only versions whose tar.gz + .sha256 actually exist in GitHub Releases belong here.
+# 5.4.45 published 2026-11-08 to x-rush/asdf-php Releases tag php-5.4.45
+# (sha256 21b9a98a...). The v2 tree lives on branch "v2"; master keeps the v1
+# plugin. bin/list-all reads this file from v2 and falls back to the local copy
+# when offline.
+#
+# Support scope (frozen 2026-11-08): 5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1+
+# Frozen closed set, each branch pinned to its LAST upstream release:
+#   5.4.45  5.6.40  7.2.34  7.3.33  7.4.33  8.0.30  8.1.34
+# (php.net/eol.php Unsupported Branches, verified 2026-11-08)
+# 8.2 and later roll through the current channel, not this frozen list.
+# See manifest.json -> support_matrix for the 3-generation build strategy.
+#
+# planned != published: a line is added here ONLY after its artifact is uploaded
+# and manifest.json has a real sha256 + status "published".
+5.4.45
