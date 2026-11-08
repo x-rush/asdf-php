@@ -163,7 +163,7 @@
       "artifacts": {
         "linux-x86_64": {
           "name": "php-5.4.45-linux-x86_64.tar.gz",
-          "sha256": "21b9a98ab9cda5a23d65cd36e8be8b9a4548d05473e668a623eb45f59302f3b4",
+          "sha256": "c1f87ae2caf13343cc7627d29ffcf4e65c6bb62f2344dc7f3badfefda18912c6",
           "status": "published"
         },
         "darwin-x86_64": {
@@ -285,7 +285,7 @@
       "artifacts": {
         "linux-x86_64": {
           "name": "php-7.4.33-linux-x86_64.tar.gz",
-          "sha256": "e69dc617ef956ee5f80e5db56a7fc5a82da2263d9c51a34bf670a0b6b6d4f153",
+          "sha256": "6f70fb80f90a9abe0a142c4981c277daafbeb164369f041f9a367c7f322c3be0",
           "status": "published"
         },
         "linux-arm64": {
@@ -392,6 +392,6 @@
     "configure-flag drift is silent, so it is now gated twice: scripts/gen-build-inputs.py refuses flags that are wrong for a version at build-input time (--with-mysql before 7.0; zip is --enable-zip until 7.4 and --with-zip from 7.4; gd is --with-gd until 7.4 and --enable-gd from 7.4; --with-freetype-dir/--with-jpeg-dir until 7.4; any /opt/toolchain path in g2/g3), and scripts/smoke-artifact.sh runs a runtime feature probe (mbstring, curl, gd jpeg+png, mysqli, pdo_mysql, openssl, zip, zlib) because a wrong flag only produces an 'unrecognized options' warning and an artifact that runs but silently lacks functions.",
     "build dependencies are the one input this repository cannot pin (2026-11-08): for an EOL suite the live mirror still serves its index but has deleted the files that index names — bullseye-security pointed at perl 5.32.1-4+deb11u5, gcc-10 10.2.1-6 and libicu67 while all three returned 404, so apt-get update succeeds and install dies at 4 of 47 packages. build/apt-install.sh therefore skips deb.debian.org for jessie/stretch/buster/bullseye, walks the domestic archive mirrors and then archive.debian.org, keeps apt's partial download cache across attempts and resumes with --fix-missing instead of refetching 70 MB. Measured inside this Docker host: bullseye 102 MB / 101 s, jessie 74.3 MB / 123 s. A proxy or internal mirror overrides the whole chain with --build-arg APT_MIRROR_MAIN.",
     "macOS platform reality (2026-11-08, source-verified): Zend in PHP 5.4.45 has zero __aarch64__ branches and three __x86_64__ ones (zend_operators.h, zend_multiply.h, zend_alloc.c), all inline assembly with plain-C fallbacks and no #error on unknown architectures, so arm64 is not architecturally blocked. The real obstacles are the macOS SDK (no curl headers, no OpenSSL headers), modern Clang diagnostics (implicit function declaration is an error since Clang 15), and the impossibility of bundling libSystem. Hence: 5.x and 7.2-7.4 ship darwin-x86_64 only (covering Apple Silicon via Rosetta 2), 8.0/8.1 add native darwin-arm64.",
-    "7.4.33 linux-x86_64 was published to Releases on 2026-11-08 with sha256 e69dc617ef956ee5f80e5db56a7fc5a82da2263d9c51a34bf670a0b6b6d4f153. That artifact was built BEFORE the include_path / PEAR relocation fix, so after unpacking, get_include_path() and pear/pecl still resolve to /opt/php/7.4.33. Rebuilding from the current versions/7.4.33.toml produces a different artifact (sha256 6f70fb80f90a9abe0a142c4981c277daafbeb164369f041f9a367c7f322c3be0) which passes all 18 smoke assertions plus the end-to-end bin/install check. Keeping the old release online means shipping a known-broken package: republish or delete tag php-7.4.33."
+    "The 5.4.45 and 7.4.33 release assets were first uploaded from builds made before the include_path / PEAR relocation fix and the 5.x gd fix, so those early bytes resolved to /opt/php and shipped a gd without JPEG or FreeType. Both assets were replaced in place on 2026-11-08 with rebuilds from the current definitions: 5.4.45 c1f87ae2caf13343cc7627d29ffcf4e65c6bb62f2344dc7f3badfefda18912c6, 7.4.33 6f70fb80f90a9abe0a142c4981c277daafbeb164369f041f9a367c7f322c3be0. Anyone holding the older tarball should discard it: the sidecar now describes the new bytes. Both replacements pass the full smoke suite plus verify/e2e.sh inside a clean debian:bookworm-slim container."
   ]
 }

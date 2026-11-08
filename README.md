@@ -38,7 +38,7 @@ Every version below has been compiled and smoke-tested on **linux-x86_64**. "com
 
 The 5.x artifacts were additionally unpacked on bullseye (glibc 2.31) and verified there — old PHP running on a newer libc is the entire point of bundling.
 
-`linux-arm64` and macOS are not built yet; see [Platform support](#platform-support).
+`linux-arm64` and macOS are not built: this project has no arm64 or macOS build host. See [Platform support](#platform-support).
 
 ## Requirements
 
@@ -155,6 +155,25 @@ pecl install xdebug-2.2.7
 
 `php-config` and `phpize` resolve relative to wherever you installed the PHP, so this works without setting anything by hand.
 
+## Verifying a build
+
+`scripts/test.sh` checks the static contracts — definitions, configure flags, the platform gate. `verify/e2e.sh` checks the other half: it calls `bin/install` with exactly the environment asdf passes, installs each tarball from `~/.asdf-php-dist` into a temporary prefix, and inspects the result. No network, no Release, no asdf binary required.
+
+```bash
+bash verify/e2e.sh                        # every artifact in ~/.asdf-php-dist
+bash verify/e2e.sh 7.4.33 8.1.34          # just these versions
+ASDF_PHP_DIST_DIR=/media/backup bash verify/e2e.sh
+```
+
+Per version it asserts: `php` / `phpize` / `php-config` are executable, redis and swoole load, `extension_dir` and `include_path` follow the unpack prefix, the feature probes (`gzencode`, `iconv`, `bcadd`, `socket_create`, `exif_read_data`, `pcntl_fork`, `Phar`, `imagettftext`) all answer, the first `pear` run consumes the relocation marker, and no `/opt/php/` build prefix survives in `bin/`, `etc/` or `lib/php/`. Exit code is 0 only if every requested version passed.
+
+The artifacts are Linux ELF binaries, so on macOS or Windows run it in a Linux container:
+
+```bash
+docker run --rm -v "$PWD:/repo" -v "$HOME/.asdf-php-dist:/dist:ro" debian:bookworm-slim \
+  bash -c 'cd /repo && ASDF_PHP_DIST_DIR=/dist bash verify/e2e.sh'
+```
+
 ## Platform support
 
 `bin/install` checks the platform before downloading and fails with a clear message rather than a 404:
@@ -162,18 +181,20 @@ pecl install xdebug-2.2.7
 | Platform | Status |
 |---|---|
 | linux-x86_64 | supported |
-| linux-arm64 | planned for 7.2+ / **never for 5.4 and 5.6** — see below |
-| darwin-x86_64 | planned |
-| darwin-arm64 | planned |
+| linux-arm64 | not built — no arm64 build host has ever run this |
+| darwin-x86_64 | not built — `build/macos.sh` exists and has never been executed on a Mac |
+| darwin-arm64 | not built |
 | anything else | rejected with an explicit message |
 
-"planned" and "not happening" are different messages on purpose. If you land here on an ARM box before the artifact exists, you get *planned but not published yet*, not *unsupported*.
+`bin/install` still separates *planned* from *unsupported*, so an ARM user gets the reason and the local-build command instead of a dead end. But nothing on this list is scheduled: what exists is what has been compiled and verified on linux-x86_64, and the other three rows would need hardware this project does not have.
 
 The one place where a platform will genuinely never appear is `linux-arm64` for 5.4 and 5.6. Both build on `debian:jessie`, whose official multi-arch index carries only `386 / amd64 / armv5 / armv7` — no arm64 at all. Reaching arm64 would mean a newer base, which raises glibc from 2.19 to 2.24 or later, and running against 2.19-era systems is the entire reason those two versions are here. So for those versions the installer says *will not be built*, names the reason, and points you at 7.2+ instead of leaving you to wait for a milestone that is not coming.
 
 `manifest.json` → `platforms` is the source of truth for this table, and the test suite fails if the table, the manifest and the platform gate in `bin/install` ever disagree.
 
 ### macOS: what is actually different
+
+**This section describes the design of `build/macos.sh`, not a path that works today.** No Mac has ever run it end-to-end, and neither has `--platform linux-arm64` been run on an arm64 host. Treat both as recipes awaiting their first real build, not as verified support.
 
 macOS does not let you bundle its system libraries. libSystem and libc++ come from the OS, so a macOS artifact is tied to its `MACOSX_DEPLOYMENT_TARGET` (11.0) and cannot be as portable as the Linux builds — those bundle everything except glibc.
 
