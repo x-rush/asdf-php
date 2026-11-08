@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # asdf-php v2 / 瘦插件
 # 契约不变：asdf 传入 ASDF_INSTALL_VERSION / ASDF_INSTALL_PATH，插件把 bin/php 放进该目录。
-# 变化：插件不再编译、不再探测系统库、不再拼 configure。
+# 变化：插件不在用户机器上编译，也不探测系统库、不拼 configure。
+#
+# 取件顺序（第一条命中即止）：
+#   1) 本地构建目录 ${ASDF_PHP_DIST_DIR:-$HOME/.asdf-php-dist}/<name>
+#      scripts/l2.sh 每编完一个版本都会把 tar.gz + .sha256 归档到那里，
+#      所以「一个制品都不发布」也照样能 asdf install：先编，后装。
+#   2) GitHub Releases —— 只有在真把制品发出去之后才有东西可取。
+# 两条路都走同一套 sha256 校验与解包，不因为来源不同就降低校验。
 set -euo pipefail
 
 : "${ASDF_INSTALL_VERSION:?asdf did not set ASDF_INSTALL_VERSION}"
@@ -15,11 +22,29 @@ case "$(uname -m)" in
   *) echo "asdf-php: unsupported CPU $(uname -m)" >&2; exit 1 ;;
 esac
 plat="${os}-${arch}"
+name="php-${v}-${plat}.tar.gz"
+
+# 本地构建产物目录，与 scripts/l2.sh 的归档目标同源（同一个默认值）。
+# 想换地方就在两边都设 ASDF_PHP_DIST_DIR —— 一个变量，不做第二套约定。
+dist="${ASDF_PHP_DIST_DIR:-$HOME/.asdf-php-dist}"
+
+# macOS has no sha256sum; Git Bash on Windows ships shasum. Resolve once.
+if command -v sha256sum >/dev/null 2>&1; then
+  hash_cmd() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  hash_cmd() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  echo "asdf-php: no sha256 tool found (need sha256sum or shasum)" >&2
+  exit 1
+fi
 
 # Platforms that actually have published artifacts. Keep in sync with
 # manifest.json -> platforms and README -> Platform support; scripts/test.sh
 # asserts all three agree. Checking here turns a bare HTTP 404 into a
 # message that says what is available instead of what failed.
+#
+# NOTE: the three assignments below must stay flush-left. scripts/test.sh reads
+# them with `sed -n 's/^SUPPORTED="..."/.../p'`, so indenting them breaks T3e.
 SUPPORTED="linux-x86_64"
 # Platforms that are designed and being built but have no artifact yet. Saying
 # "planned" instead of "unsupported" matters: a user who came for 7.4 on ARM
@@ -40,7 +65,11 @@ UNAVAILABLE="5.4.45:linux-arm64 5.6.40:linux-arm64"
 
 is_supported() { case " $SUPPORTED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-if ! is_supported "$plat"; then
+# 只在「本地没有构建产物」时才跑：这条路要下载，所以必须先确认这个平台
+# 确实有东西可下。会改写全局 plat / name（Rosetta 回退到 darwin-x86_64）。
+platform_gate() {
+  is_supported "$plat" && return 0
+
   # Apple Silicon can run the Intel build through Rosetta 2. That is why the
   # macOS matrix is half as big as it looks: one darwin-x86_64 artifact serves
   # Intel Macs natively and Apple Silicon via translation. Prefer a native
@@ -49,19 +78,21 @@ if ! is_supported "$plat"; then
     if /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
       echo "asdf-php: no arm64 build published; using darwin-x86_64 under Rosetta 2" >&2
       plat="darwin-x86_64"
-    else
-      cat >&2 <<'ROSETTA'
+      name="php-${v}-${plat}.tar.gz"
+      return 0
+    fi
+    cat >&2 <<'ROSETTA'
 asdf-php: this release ships only a darwin-x86_64 build. That runs on Apple
           Silicon through Rosetta 2, but Rosetta is not installed.
           Install it once, then re-run:
               softwareupdate --install-rosetta --agree-to-license
 ROSETTA
-      exit 1
-    fi
-  else
-    case " $UNAVAILABLE " in
-      *" ${v}:${plat} "*)
-        cat >&2 <<EOF
+    exit 1
+  fi
+
+  case " $UNAVAILABLE " in
+    *" ${v}:${plat} "*)
+      cat >&2 <<EOF
 asdf-php: PHP ${v} will not be built for ${plat}.
           The base image for this version (debian:jessie) publishes no arm64
           build, and the reason ${v} exists is that it runs against glibc 2.19 —
@@ -69,45 +100,51 @@ asdf-php: PHP ${v} will not be built for ${plat}.
           missing milestone, so there is nothing to wait for.
           For arm64 use 7.2 and newer: asdf install php 7.4.33
 EOF
-        exit 1 ;;
-    esac
-    echo "asdf-php: no prebuilt artifact for ${plat}" >&2
-    echo "asdf-php: currently published: ${SUPPORTED}" >&2
-    case " $PLANNED " in
-      *" $plat "*) echo "asdf-php: ${plat} is planned but not published yet (see the README roadmap)" >&2 ;;
-    esac
-    echo "asdf-php: see the Platform support table in README.md" >&2
-    echo "asdf-php: nothing was downloaded; your existing installs are untouched" >&2
-    exit 1
-  fi
-fi
+      exit 1 ;;
+  esac
 
-base="${ASDF_PHP_RELEASE_BASE:-https://github.com/x-rush/asdf-php/releases/download}"
-name="php-${v}-${plat}.tar.gz"
-url="${base}/php-${v}/${name}"
-
-# macOS has no sha256sum; Git Bash on Windows ships shasum. Resolve once.
-if command -v sha256sum >/dev/null 2>&1; then
-  hash_cmd() { sha256sum "$1" | awk '{print $1}'; }
-elif command -v shasum >/dev/null 2>&1; then
-  hash_cmd() { shasum -a 256 "$1" | awk '{print $1}'; }
-else
-  echo "asdf-php: no sha256 tool found (need sha256sum or shasum)" >&2
+  cat >&2 <<EOF
+asdf-php: nothing to install for ${plat}.
+          Looked for a local build in ${dist} (none), and this platform has no
+          published release. Build it on this machine first — that is the
+          supported path when a platform has no release:
+              bash scripts/l2.sh ${v} --install
+EOF
+  echo "asdf-php: currently published: ${SUPPORTED}" >&2
+  case " $PLANNED " in
+    *" $plat "*) echo "asdf-php: ${plat} is planned but not published yet (see the README roadmap)" >&2 ;;
+  esac
+  echo "asdf-php: see the Platform support table in README.md" >&2
+  echo "asdf-php: nothing was downloaded; your existing installs are untouched" >&2
   exit 1
-fi
+}
 
 work="$(mktemp -d)"
 # Cleanup must never change the install result (some hosts restrict temp
 # deletion). Everything is verified before this trap runs.
 trap 'rm -rf -- "$work" 2>/dev/null || true' EXIT
 
-curl -fL --retry 3 -o "$work/$name" "$url"
-curl -fL --retry 3 -o "$work/$name.sha256" "$url.sha256"
+if [ -f "$dist/$name" ] && [ -f "$dist/$name.sha256" ]; then
+  # 本地构建优先。这条路不碰网络，也不受发布清单限制：编得出来就装得上。
+  src="local"
+  echo "asdf-php: using the locally built $name from $dist" >&2
+  cp "$dist/$name" "$dist/$name.sha256" "$work/"
+else
+  platform_gate
+  base="${ASDF_PHP_RELEASE_BASE:-https://github.com/x-rush/asdf-php/releases/download}"
+  url="${base}/php-${v}/${name}"
+  src="release"
+  curl -fL --retry 3 -o "$work/$name" "$url"
+  curl -fL --retry 3 -o "$work/$name.sha256" "$url.sha256"
+fi
 
 expected="$(awk 'NR==1 {print $1}' "$work/$name.sha256")"
 actual="$(hash_cmd "$work/$name")"
 if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-  echo "asdf-php: sha256 mismatch for $name" >&2
+  echo "asdf-php: sha256 mismatch for $name (source: $src)" >&2
+  if [ "$src" = "local" ]; then
+    echo "asdf-php: the local copy is corrupt or was overwritten; rebuild with: bash scripts/l2.sh $v" >&2
+  fi
   exit 1
 fi
 
@@ -119,4 +156,8 @@ if [ ! -x "$ASDF_INSTALL_PATH/bin/php" ]; then
 fi
 
 "$ASDF_INSTALL_PATH/bin/php" -v | head -1
-echo "asdf-php: $v installed from frozen artifact; see manifest.json for EOL/security status" >&2
+if [ "$src" = "local" ]; then
+  echo "asdf-php: $v installed from the local build in $dist" >&2
+else
+  echo "asdf-php: $v installed from frozen artifact; see manifest.json for EOL/security status" >&2
+fi

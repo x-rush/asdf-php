@@ -75,18 +75,29 @@ else
 fi
 
 if python3 - "$root" <<'PY' 2>"$tmp/vers.err"
-import json, sys
-root = sys.argv[1]
-m = json.load(open(root + "/manifest.json"))
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+m = json.load(open(root / "manifest.json"))
 published = {v["version"] for v in m["versions"]
              if any(a.get("status") == "published" for a in v["artifacts"].values())}
-listed = {ln.split()[0] for ln in open(root + "/versions.txt")
-          if ln.strip() and not ln.lstrip().startswith("#")}
-assert published == listed, (published, listed)
+listed = [ln.split()[0] for ln in open(root / "versions.txt")
+          if ln.strip() and not ln.lstrip().startswith("#")]
+listed_set = set(listed)
+
+# versions.txt drives `asdf list-all`, so it answers "what can I install",
+# which is a superset of "what is published": a version that compiles is
+# installable through scripts/l2.sh --install even with zero releases. The
+# old assertion demanded equality, which meant a working local build could
+# never show up in list-all. Two separate invariants replace it.
+missing = published - listed_set
+assert not missing, f"published but missing from versions.txt: {sorted(missing)}"
+undefined = [v for v in listed if not (root / "versions" / f"{v}.toml").is_file()]
+assert not undefined, f"listed in versions.txt with no definition toml: {undefined}"
+assert len(listed) == len(listed_set), f"duplicate versions.txt entries: {listed}"
 print("ok")
 PY
 then
-  pass "T3 versions.txt lists exactly the published artifacts (both empty is valid)"
+  pass "T3 versions.txt covers every published version AND every line has a definition"
 else
   fail "T3 versions.txt: $(cat "$tmp/vers.err")"
 fi
@@ -776,11 +787,14 @@ FAKE_UNAME
 
   # Pass a RELATIVE install path: on MinGW, GNU tar cannot handle a Windows
   # drive-letter path in -C even with --force-local.
+  # ASDF_PHP_DIST_DIR points at an empty dir so a real ~/.asdf-php-dist on the
+  # developer's machine cannot shadow the fake release server.
   run_install() { # <relative install path under $tmp>
     ( cd "$tmp" &&
       PATH="$fakebin:$PATH" \
       ASDF_INSTALL_VERSION="$ver" \
       ASDF_INSTALL_PATH="$1" \
+      ASDF_PHP_DIST_DIR="$tmp/no-local-dist" \
       ASDF_PHP_RELEASE_BASE="http://127.0.0.1:$port" \
         bash "$root/bin/install" )
   }
@@ -835,7 +849,7 @@ FAKE_DARWIN
         ASDF_PHP_RELEASE_BASE="http://127.0.0.1:$port" \
           bash "$root/bin/install" ) >"$tmp/plat.out" 2>&1; then
     fail "T8b darwin-arm64 should have been refused but the install succeeded"
-  elif grep -q 'no prebuilt artifact for darwin-arm64' "$tmp/plat.out" \
+  elif grep -q 'nothing to install for darwin-arm64' "$tmp/plat.out" \
        && grep -q 'currently published: linux-x86_64' "$tmp/plat.out"; then
     pass "T8b unsupported platform -> refused before download, names what exists"
   else
@@ -873,6 +887,41 @@ FAKE_DARWIN
     pass "T8d darwin-arm64 -> x86_64 fallback, asks for Rosetta when missing"
   else
     fail "T8d wrong Rosetta path: $(tail -2 "$tmp/rosetta.out")"
+  fi
+
+  # T9: 本地构建优先。这是「一个制品都不发布」时的实际工作方式 —— l2.sh 把
+  # tar.gz + sidecar 归档到 ~/.asdf-php-dist，install 先看那里。所以即使 Release
+  # 完全不可达，只要本机编过，就装得上。没有这条，「不发布」等于「不能用」。
+  local_dist="$tmp/local-dist"
+  mkdir -p "$local_dist"
+  make_artifact "$local_dist/$name" 1
+  sha256_of "$local_dist/$name" > "$local_dist/$name.sha256"
+  if ( cd "$tmp" && PATH="$fakebin:$PATH" \
+        ASDF_INSTALL_VERSION="$ver" ASDF_INSTALL_PATH="i_local" \
+        ASDF_PHP_DIST_DIR="$local_dist" \
+        ASDF_PHP_RELEASE_BASE="http://127.0.0.1:1/unreachable" \
+          bash "$root/bin/install" ) >"$tmp/local.out" 2>&1 \
+     && [ -x "$tmp/i_local/bin/php" ] \
+     && grep -q 'using the locally built' "$tmp/local.out"; then
+    pass "T9 local build dir wins over an unreachable release (zero published artifacts)"
+  else
+    fail "T9 local build path: $(tail -3 "$tmp/local.out")"
+  fi
+
+  # T9b: 本地制品坏掉必须拒，并且指出是本地副本的问题 —— 否则用户会以为
+  # 是上游发布坏了，跑去查网络和代理。
+  printf '%064d\n' 0 > "$local_dist/$name.sha256"
+  if ( cd "$tmp" && PATH="$fakebin:$PATH" \
+        ASDF_INSTALL_VERSION="$ver" ASDF_INSTALL_PATH="i_local_bad" \
+        ASDF_PHP_DIST_DIR="$local_dist" \
+        ASDF_PHP_RELEASE_BASE="http://127.0.0.1:1/unreachable" \
+          bash "$root/bin/install" ) >"$tmp/localbad.out" 2>&1; then
+    fail "T9b a corrupt local artifact should have been refused"
+  elif grep -q 'sha256 mismatch' "$tmp/localbad.out" \
+       && grep -q 'rebuild with' "$tmp/localbad.out"; then
+    pass "T9b corrupt local artifact -> mismatch + tells you to rebuild locally"
+  else
+    fail "T9b wrong rejection: $(tail -2 "$tmp/localbad.out")"
   fi
 fi
 

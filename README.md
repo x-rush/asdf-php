@@ -1,87 +1,102 @@
 # asdf-php
 
-Prebuilt, self-contained PHP builds for [asdf](https://asdf-vm.com) — install PHP in seconds, without a compiler, without touching your system libraries.
+Self-contained PHP builds for [asdf](https://asdf-vm.com), covering seven versions from 5.4.45 to 8.1.34. Each one is compiled once in a pinned container against frozen inputs, and the result bundles every non-glibc shared library it needs — so the PHP you get runs on a machine that has none of its build dependencies.
 
+Two ways to get one, same result:
+
+```bash
+bash scripts/l2.sh 7.4.33 --install   # build it here, install straight into asdf
+asdf install php 7.4.33               # install a prebuilt artifact, if one is published
 ```
-asdf plugin add php https://github.com/x-rush/asdf-php.git
-asdf install php 5.4.45
-```
+
+`bin/install` checks `~/.asdf-php-dist` first, so a build you did yourself is all it needs. Publishing is optional; it only saves the next person from building the same thing.
 
 ## Why this exists
 
-The existing asdf PHP plugins compile PHP from source on your machine. That works for recent versions on a recent distro, and falls apart everywhere else:
+Compiling PHP 5.x or 7.x on a current distro fails for reasons that have nothing to do with PHP:
 
 - **Bison 3 vs Bison 2** — PHP 5.x needs bison 2.x; every current distro ships bison 3.
-- **OpenSSL ABI** — PHP 5.x predates OpenSSL 1.1; a distro OpenSSL 3 build cannot link against it.
+- **OpenSSL ABI** — PHP 5.x predates OpenSSL 1.1; PHP 8.0 cannot use OpenSSL 3. Neither links against a distro build of the wrong generation.
 - **Missing headers** — `libcurl4-gnutls-dev`, `libxml2-dev`, `re2c` appear and disappear across releases.
-- **Build time** — 20 to 40 minutes when it works, and a configure failure when it does not.
+- **Silent feature loss** — the worst one. A configure flag the distro no longer supports does not fail; it disappears. You get a build that runs, and find out months later that `gzencode` does not exist.
 
-This plugin removes the compiler from the user's machine entirely. Builds happen once, in a pinned container, against frozen inputs. What you download is a tarball with every non-glibc shared library bundled inside.
+In-place building plugins handle this with per-distro detection, and when a probe fails they drop the feature and carry on. This repository moves the compile into a container with frozen inputs, declares each version's flags in one file, and checks them against that version's own `ext/*/config.m4` — so a flag that would be ignored fails the build instead of the user.
 
 ## Status
 
-**Early.** Only `5.4.45` on `linux-x86_64` is published today. The rest of the support matrix below is planned, not available — `asdf list-all php` shows exactly what exists.
+Every version below has been compiled and smoke-tested on **linux-x86_64**. "compiles" means that version's own `configure` accepted every declared flag and `make` produced a working CLI — not that an artifact was published.
 
-The point of this plugin is the versions a source build cannot reach. For PHP 7.x and 8.x, a source-building plugin still works on most machines, just slowly.
+| PHP | Gen | Base | Notes |
+|---|---|---|---|
+| 5.4.45 | g1 | debian:jessie | bison 2.7 + vendored OpenSSL 1.0.2u; redis 2.2.8, swoole 1.10.5 |
+| 5.6.40 | g1 | debian:jessie | same toolchain as 5.4 |
+| 7.2.34 | g2 | debian:bullseye | `-fcommon` (GCC 10) + freetype-config shim; redis 5.3.7, swoole 4.8.13 |
+| 7.3.33 | g2 | debian:bullseye | same as 7.2 |
+| 7.4.33 | g2 | debian:bullseye | `--enable-gd`, `--with-zip`; redis 5.3.7, swoole 4.8.13 |
+| 8.0.30 | g2 | debian:bullseye | system OpenSSL 1.1.1 |
+| 8.1.34 | g3 | debian:bookworm | system OpenSSL 3.0 |
 
-**If you need PHP 7.x or 8.x today, use the v1 plugin.** It is still on the `master` branch and compiles from source:
+The 5.x artifacts were additionally unpacked on bullseye (glibc 2.31) and verified there — old PHP running on a newer libc is the entire point of bundling.
 
-```bash
-asdf plugin add php https://github.com/x-rush/asdf-php.git master
-```
-
-Come back here for PHP 5.x, or when 7.x/8.x artifacts land. The two branches coexist; neither overwrites the other.
+`linux-arm64` and macOS are not built yet; see [Platform support](#platform-support).
 
 ## Requirements
 
-- Linux `x86_64` (the only platform with published artifacts today)
+- Linux `x86_64`
+- Docker, for building — the compile happens in a container so that 5.4 and 5.6 can see the toolchain they were written for
 - `curl`, `tar`, and `sha256sum` **or** `shasum` (macOS has no `sha256sum`; the plugin picks whichever exists)
 - asdf 0.16 or newer
 
-`linux-arm64`, `darwin-x86_64` and `darwin-arm64` are built but not published yet. Other platforms fail with an explicit message rather than a broken install — see [Platform support](#platform-support).
+Installing a published artifact needs none of the build machinery — only `curl`, `tar` and a checksum tool.
 
 ## Install
 
+### From a build you make here
+
 ```bash
-asdf plugin add php https://github.com/x-rush/asdf-php.git
-asdf install php 5.4.45
+git clone https://github.com/x-rush/asdf-php.git
+cd asdf-php
+
+bash scripts/l2.sh 7.4.33 --install
 ```
 
-Pin it for a project:
+That compiles the version, runs the smoke test against a fresh unpack path, archives the tarball to `~/.asdf-php-dist`, and extracts it into `~/.asdf/installs/php/7.4.33`. Nothing else is downloaded afterwards.
+
+Then select it:
 
 ```bash
-asdf local php 5.4.45          # writes .tool-versions
-```
-
-Or globally:
-
-```bash
-asdf global php 5.4.45
-```
-
-Verify:
-
-```bash
+asdf global php 7.4.33     # or: asdf local php 7.4.33
 php -v
 php -m | grep -E 'redis|swoole'
 ```
 
+### From a published artifact
+
+```bash
+asdf plugin add php https://github.com/x-rush/asdf-php.git
+asdf install php 7.4.33
+```
+
+If nothing is published for your platform, the installer says so and points at `scripts/l2.sh <version> --install` rather than failing with a 404.
+
+Either way the checksum is verified before anything is unpacked, and a mismatch aborts with nothing written to the install path.
+
 ## Supported versions
 
-`status` is honest: a version is either **published** (downloadable now) or **scaffolded** (definition, template and CI matrix exist, artifact not built yet).
+`asdf list-all php` reads `versions.txt`. It lists what can be installed — from a published artifact or from a local build.
 
-| PHP | Status | linux-x86_64 | linux-arm64 | darwin-x86_64 | darwin-arm64 |
-|---|---|---|---|---|---|
-| 5.4.45 | **published** | yes | scaffolded | scaffolded | via Rosetta |
-| 5.6.40 | scaffolded | — | scaffolded | scaffolded | via Rosetta |
-| 7.2.34 | scaffolded | — | scaffolded | scaffolded | via Rosetta |
-| 7.3.33 | scaffolded | — | scaffolded | scaffolded | via Rosetta |
-| 7.4.33 | scaffolded | — | scaffolded | scaffolded | via Rosetta |
-| 8.0.30 | scaffolded | — | scaffolded | scaffolded | scaffolded |
-| 8.1.34 | scaffolded | — | scaffolded | scaffolded | scaffolded |
-| 8.2+ | current channel, not implemented | — | — | — | — |
+| PHP | Status |
+|---|---|
+| 5.4.45 | compiles; artifact published |
+| 5.6.40 | compiles |
+| 7.2.34 | compiles |
+| 7.3.33 | compiles |
+| 7.4.33 | compiles; artifact published |
+| 8.0.30 | compiles |
+| 8.1.34 | compiles |
+| 8.2+ | not started |
 
-EOL versions are pinned to their final upstream release and rebuilt never. Current versions (8.2 and newer) will follow upstream releases through a separate channel, once that channel exists.
+EOL versions are pinned to their final upstream release and never rebuilt. A "current" channel for 8.2+ would follow upstream releases; it does not exist yet.
 
 Three build generations cover all seven versions, split on the OpenSSL ABI rather than on the version number:
 
@@ -91,28 +106,30 @@ Three build generations cover all seven versions, split on the OpenSSL ABI rathe
 | g2 | 7.2, 7.3, 7.4, 8.0 | system 1.1.1 (3.0 is unsupported before 8.1) | debian:bullseye |
 | g3 | 8.1+ | system 3.0 | debian:bookworm |
 
-`manifest.json` is the machine-readable version of this table, including artifact SHA256 sums.
-
 ## Security
 
 **EOL PHP has no upstream security fixes. This is an offline tool, not a web server runtime.**
 
 PHP 5.4 reached end of life in September 2015 and will not receive security patches from anyone. Treat a 5.4 install as a legacy migration aid: run it locally, or in an isolated container, to keep an old project buildable. Do not expose it to the internet, and do not put credentials or user data behind it.
 
-Every artifact is built with the exact inputs recorded in `versions/<version>.toml` and `vendor/SOURCES.json`, and verified by SHA256 on download. Nothing is fetched at runtime beyond the release asset itself.
+Every build uses the exact inputs recorded in `versions/<version>.toml` and `vendor/SOURCES.json`. An artifact is verified by SHA256 before it is unpacked; a local build is verified the same way as a downloaded one.
 
 ## How it works
 
 ```
-asdf install php 5.4.45
-  └─ bin/install
-       ├─ download php-5.4.45-linux-x86_64.tar.gz from GitHub Releases
-       ├─ verify SHA256 against the .sha256 sidecar
-       ├─ unpack into ~/.asdf/installs/php/5.4.45
-       └─ run bin/php -v to confirm the result
+bash scripts/l2.sh 7.4.33 --install
+  ├─ vendor sources       fetch + hash-verify into vendor/
+  ├─ expand definition    versions/7.4.33.toml -> build/.gen/7.4.33.{flags,env,ext}
+  ├─ docker build         pinned base, configured from .gen, make, extensions
+  ├─ extract artifact     tarball + .sha256 sidecar
+  ├─ archive              copy to ~/.asdf-php-dist (out/ is wiped per run)
+  ├─ smoke                relocate, conf.d scanning, redis/swoole, function probe
+  └─ install              unpack into ~/.asdf/installs/php/7.4.33
 ```
 
-`bin/install` is ~45 lines of shell. It does not compile, does not read the build sources, and does not probe your system for headers.
+`bin/install` is about 90 lines of shell. It does not compile, does not read build sources, and does not probe your system for headers: it takes a tarball from `~/.asdf-php-dist` or from Releases, verifies it, and unpacks it.
+
+A failure at smoke is a hard stop. A WARN-free build is not enough — the artifact has to prove it relocates, loads its extensions from a stranger path, and exposes the functions it claims.
 
 ## Relocatable layout
 
@@ -124,11 +141,11 @@ The artifact works from any directory. Nothing is hardcoded to the build prefix:
 
 ## Extensions
 
-Every version is built with the same baseline: `zlib`, `iconv`, `phar`, `bcmath`, `sockets`, `exif`, `pcntl`, plus `opcache` on 5.5 and newer. These are all off by default in PHP itself, and a build that omits one does not fail — it just silently lacks the functions later, which is almost impossible to diagnose from a configure log. The build now verifies each flag against that version's own `config.m4` (`scripts/check-flags.py`) and the smoke test probes the functions in the finished artifact, so an omission fails the build instead of the user.
+Every version is built with the same baseline: `zlib`, `iconv`, `phar`, `bcmath`, `sockets`, `exif`, `pcntl`, plus `opcache` on 5.5 and newer. These are all off by default in PHP itself, and a build that omits one does not fail — it silently lacks the functions later, which is almost impossible to diagnose from a configure log. Flags are checked against that version's own `config.m4` (`scripts/check-flags.py`) and the smoke test probes the functions in the finished artifact, so an omission fails the build instead of the user.
 
 `opcache` is compiled in but not enabled: `zend_extension=opcache` in an ini file turns it on, which matters for php-fpm and not for CLI.
 
-`redis` and `swoole` are compiled in and enabled through `etc/conf.d/`. Both are loaded and asserted by the release smoke test. Versions are pinned per PHP generation — `redis 2.2.8` / `swoole 1.10.5` for 5.x, `redis 5.3.7` / `swoole 4.8.13` from 7.2 up.
+`redis` and `swoole` are compiled in and enabled through `etc/conf.d/`. Both are loaded and asserted by the smoke test. Versions are pinned per generation — `redis 2.2.8` / `swoole 1.10.5` for 5.x, `redis 5.3.7` / `swoole 4.8.13` from 7.2 up.
 
 Build your own extension against the installed copy:
 
@@ -168,7 +185,7 @@ What the macOS build does instead:
 
 If your Mac is arm64 and only an x86_64 artifact exists, the plugin tells you to run `softwareupdate --install-rosetta --agree-to-license` instead of quietly downloading something that will not execute.
 
-## Building from source
+## Building
 
 Build inputs are kept out of the install path — the plugin branch stays small on purpose, because `asdf plugin add` clones it. The pinned sources live on the `build-inputs` branch and are re-fetched (and hash-verified) by `scripts/vendor.sh`.
 
@@ -187,6 +204,8 @@ bash scripts/l2.sh 7.4.33 --platform linux-arm64   # needs a native arm64 host
 bash build/macos.sh 8.1.34 --arch arm64
 ```
 
+Artifacts land in `out/` and in `~/.asdf-php-dist`. `out/` is wiped at the start of every run, which is why the archive step exists: build five versions in a row and you still have all five.
+
 Adding a version means adding `versions/<ver>.toml` — not editing a Dockerfile or a script. `build/Dockerfile.g1|g2|g3` read every flag, CFLAGS override and extension list from that file through `scripts/gen-build-inputs.py`, so there is exactly one place per version where build inputs are declared. The 5.4 track is the single exception: `build/Dockerfile.5.4` predates the generator and hardcodes its flag list, so `T3r` cross-checks it against `versions/5.4.45.toml` — otherwise a definition edit would silently leave the 5.4.45 artifact behind.
 
 One part of the build cannot be pinned by this repository: build dependencies come from a Debian mirror. Debian moves an EOL suite to `archive.debian.org`, whose Fastly front end is unreliable from some networks — a 67 MB download that dies on the last three packages used to abort the whole layer and start again from zero. `build/apt-install.sh` walks a source chain (live mirror → Chinese archive mirrors → `archive.debian.org`), keeps apt's partial download cache across attempts, and resumes with `--fix-missing` instead of refetching. The domestic mirrors come before the canonical archive because `archive.debian.org` is served through Fastly and measured 139 kB/s from mainland China — 8 minutes for a 67 MB layer — while those mirrors carry byte-identical packages at MB/s; `archive.debian.org` stays last so no region loses a source. Behind a proxy or an internal mirror, skip the chain entirely:
@@ -199,11 +218,15 @@ bash scripts/l2.sh 7.4.33
 
 (`HTTP_PROXY`/`HTTPS_PROXY` from your environment are forwarded to `docker build` automatically; nothing to do there.)
 
-The build is pinned to a dated base image digest. It produces the tarball, runs the smoke test against a fresh unpack path, and refuses to publish on a warning. `scripts/pack-artifact.sh` holds the packaging logic shared by all three templates and the macOS path: bundle runtime libs, relocate, move the prefix to a stranger path and verify extensions still load, then tar + sha256.
+The build is pinned to a dated base image digest. It produces the tarball, runs the smoke test against a fresh unpack path, and refuses to hand it over on a warning. `scripts/pack-artifact.sh` holds the packaging logic shared by all three templates and the macOS path: bundle runtime libs, relocate, move the prefix to a stranger path and verify extensions still load, then tar + sha256.
 
-`scripts/test.sh` runs the static contract suite: definition/schema consistency, per-version configure-flag validity, no source-compilation regressions, support-matrix drift, platform-gate drift, and the offline fallback path.
+`scripts/test.sh` runs the static contract suite: definition/schema consistency, per-version configure-flag validity, no source-compilation regressions, support-matrix drift, platform-gate drift, the local-build install path, and the offline fallback path.
 
 A note on why configure flags are gated twice: a wrong flag does not fail the build, it produces an artifact that runs but silently lacks features (`--with-mysql` vanished in PHP 7.0, gd's `--with-gd` became `--enable-gd` and zip's `--enable-zip` became `--with-zip`, both in 7.4, gd's `--with-jpeg-dir` became `--with-jpeg` in 7.4). `gen-build-inputs.py` rejects them up front, `check-flags.py` verifies them against each version's own `ext/*/config.m4`, and the smoke test additionally calls `imagecreatefromjpeg`, `mb_strlen`, `curl_init`, `mysqli_connect`, `gzencode`, `iconv`, `bcadd`, `socket_create` and friends on the finished artifact.
+
+## Publishing (optional)
+
+Nothing here requires a release. If you do want to share a build, tag it `php-<version>`, attach the tarball and its `.sha256` sidecar, and put the checksum in `manifest.json` so `bin/install` can verify what it downloads. `versions.txt` is what `asdf list-all` shows.
 
 ## Uninstall
 

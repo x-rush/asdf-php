@@ -2,6 +2,7 @@
 # asdf-php v2 / L2 一键链路：在原生 ext4 目录里把某个版本的 PHP 编出来并冒烟
 #
 #   bash scripts/l2.sh 7.4.33
+#   bash scripts/l2.sh 7.4.33 --install         编完直接装进 asdf
 #   bash scripts/l2.sh 5.4.45 --platform linux-arm64
 #   bash scripts/l2.sh 8.1.34 --platform linux-arm64 --allow-emulation
 #
@@ -22,10 +23,12 @@ die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
 ver=""
 platform=""
 allow_emu=0
+do_install=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --platform)        platform="${2:?--platform needs a value}"; shift 2 ;;
     --allow-emulation) allow_emu=1; shift ;;
+    --install)         do_install=1; shift ;;
     -h|--help)         sed -n '2,12p' "$0"; exit 0 ;;
     -*)                die "unknown option $1" ;;
     *)                 [ -z "$ver" ] || die "only one version at a time"; ver="$1"; shift ;;
@@ -170,6 +173,14 @@ ART="$(basename "${found[0]}")"
 test -s "out/$ART.sha256" || die "missing sidecar for $ART"
 printf 'artifact: out/%s  sha256=%s\n' "$ART" "$(cat "out/$ART.sha256")"
 
+# 3/6 每轮开头 rm -rf out，连跑多个版本时前一个制品会被最后一个覆盖 ——
+# 之前 8.0/8.1 编绿过却什么都没有，就是这里丢的。不发布也必须留得住，
+# 编完先落一份到持久目录，装不装、发不发都从这个副本取。
+dist="${ASDF_PHP_DIST_DIR:-$HOME/.asdf-php-dist}"
+mkdir -p "$dist"
+cp -f "out/$ART" "out/$ART.sha256" "$dist/"
+printf 'archived: %s/%s\n' "$dist" "$ART"
+
 step "5/6 smoke"
 # 宿主若装了别的 PHP，可能已设 PHPRC / PHP_INI_SCAN_DIR。wrapper 尊重用户显式
 # 设置是对的，但冒烟要验的是「干净环境里解包即用」，所以这里显式清掉再跑。
@@ -179,11 +190,37 @@ env -u PHPRC -u PHP_INI_SCAN_DIR -u ASDF_PHP_PREFIX \
 step "6/6 done"
 cat <<TIP
 smoke is a HARD GATE: relocation, conf.d scanning, redis/swoole and the
-feature probe must all PASS. A WARN-free build is not enough — do not publish.
+feature probe must all PASS. A WARN-free build is not enough.
 
-Next (only after smoke is fully green):
-  1) publish the tar.gz + .sha256 to GitHub Releases tag php-$ver
-  2) fill manifest.json artifacts.$platform.sha256 with the sidecar value,
-     set status to published, add $ver to versions.txt (once per version)
-  3) run the CI workflow once to verify the gates on this platform
+Result
+  artifact : out/$ART
+  archived : $dist/$ART
+  sha256   : $(awk 'NR==1{print $1}' "out/$ART.sha256")
+
+This build stands on its own — nothing needs to be published for it to be
+useful. Two ways to use it:
+
+  install into asdf : bash scripts/l2.sh $ver --install
+  copy to another machine : scp $dist/$ART $dist/$ART.sha256 host:~/ \\
+      then extract it into ~/.asdf/installs/php/$ver there
+
+Publishing (GitHub Releases + manifest.json sha256) stays optional; it only
+saves other people from building it themselves.
 TIP
+
+if [ "$do_install" = 1 ]; then
+  step "install into asdf"
+  # 默认目录同时覆盖 asdf 官方位置和 mise 的兼容位置；设 ASDF_PHP_INSTALL_DIR
+  # 可以指向任意前缀（例如容器里 /opt/php/$ver）。
+  pdir="${ASDF_PHP_INSTALL_DIR:-$HOME/.asdf/installs/php/$ver}"
+  if [ -d "$pdir" ] && [ -n "$(ls -A "$pdir" 2>/dev/null)" ]; then
+    die "$pdir exists and is not empty — run 'asdf uninstall php $ver' first"
+  fi
+  mkdir -p "$pdir"
+  tar -xzf "out/$ART" -C "$pdir"
+  [ -x "$pdir/bin/php" ] || die "extracted but $pdir/bin/php is missing"
+  # 宿主可能已导出别的 PHP 的 PHPRC，这里清掉再验，看到的是这个副本自己。
+  env -u PHPRC -u PHP_INI_SCAN_DIR -u ASDF_PHP_PREFIX "$pdir/bin/php" -v | head -1
+  printf '\ninstalled: %s\n' "$pdir"
+  printf 'select it : asdf global php %s   (or: asdf local php %s)\n' "$ver" "$ver"
+fi
