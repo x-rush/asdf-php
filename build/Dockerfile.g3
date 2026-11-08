@@ -25,7 +25,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       build-essential autoconf re2c pkg-config file dpkg-dev bison \
       libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
-      libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
+      zlib1g-dev libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
       libsqlite3-dev libargon2-dev libsodium-dev; \
     rm -rf /var/lib/apt/lists/*
 

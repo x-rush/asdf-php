@@ -33,6 +33,10 @@ flags = [
   "--enable-mbstring", "--enable-zip", "--with-curl", "--with-gd",
   "--with-mysql", "--with-mysqli", "--with-pdo-mysql",
   "--enable-opcache",
+  # 基础扩展集，见 5.4.45.toml 同一段注释（zlib/iconv/phar/bcmath/
+  # sockets/exif/pcntl 默认全关，漏一个就少一批函数，编译期零提示）。
+  "--with-zlib", "--with-iconv", "--enable-phar",
+  "--enable-bcmath", "--enable-sockets", "--enable-exif", "--enable-pcntl",
 ]
 
 [extensions]
@@ -43,5 +47,6 @@ swoole = "1.10.5"
 [artifact]
 # 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
 # T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
-targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64"]
+# 与 5.4.45 同因：G1 的 jessie base 没有 arm64 索引，见 5.4.45.toml 同段注释。
+targets = ["linux-x86_64", "darwin-x86_64"]
 name = "php-5.6.40-{os}-{arch}.tar.gz"

@@ -124,7 +124,11 @@ The artifact works from any directory. Nothing is hardcoded to the build prefix:
 
 ## Extensions
 
-`5.4.45` ships with `redis 2.2.8` and `swoole 1.10.5` compiled in, enabled through `etc/conf.d/`. Both are loaded and asserted by the release smoke test.
+Every version is built with the same baseline: `zlib`, `iconv`, `phar`, `bcmath`, `sockets`, `exif`, `pcntl`, plus `opcache` on 5.5 and newer. These are all off by default in PHP itself, and a build that omits one does not fail — it just silently lacks the functions later, which is almost impossible to diagnose from a configure log. The build now verifies each flag against that version's own `config.m4` (`scripts/check-flags.py`) and the smoke test probes the functions in the finished artifact, so an omission fails the build instead of the user.
+
+`opcache` is compiled in but not enabled: `zend_extension=opcache` in an ini file turns it on, which matters for php-fpm and not for CLI.
+
+`redis` and `swoole` are compiled in and enabled through `etc/conf.d/`. Both are loaded and asserted by the release smoke test. Versions are pinned per PHP generation — `redis 2.2.8` / `swoole 1.10.5` for 5.x, `redis 5.3.7` / `swoole 4.8.13` from 7.2 up.
 
 Build your own extension against the installed copy:
 
@@ -141,12 +145,14 @@ pecl install xdebug-2.2.7
 | Platform | Status |
 |---|---|
 | linux-x86_64 | supported |
-| linux-arm64 | planned |
+| linux-arm64 | planned for 7.2+ / **never for 5.4 and 5.6** — see below |
 | darwin-x86_64 | planned |
 | darwin-arm64 | planned |
 | anything else | rejected with an explicit message |
 
 "planned" and "not happening" are different messages on purpose. If you land here on an ARM box before the artifact exists, you get *planned but not published yet*, not *unsupported*.
+
+The one place where a platform will genuinely never appear is `linux-arm64` for 5.4 and 5.6. Both build on `debian:jessie`, whose official multi-arch index carries only `386 / amd64 / armv5 / armv7` — no arm64 at all. Reaching arm64 would mean a newer base, which raises glibc from 2.19 to 2.24 or later, and running against 2.19-era systems is the entire reason those two versions are here. So for those versions the installer says *will not be built*, names the reason, and points you at 7.2+ instead of leaving you to wait for a milestone that is not coming.
 
 `manifest.json` → `platforms` is the source of truth for this table, and the test suite fails if the table, the manifest and the platform gate in `bin/install` ever disagree.
 

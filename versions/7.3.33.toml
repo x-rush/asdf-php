@@ -20,11 +20,18 @@ openssl = "system 1.1.1 (libssl-dev)"
 cflags = "-O2 -fcommon"
 
 [configure]
+# 与 7.2.34 同代：gd 用 *-dir 形式，zip 用 bundled 的 --enable-zip。
+# 7.3 的 libzip 默认值是 yes（7.2 是 no），不显式传 =no 就会去链 bullseye 的
+# libzip 1.7.3，而 7.3 没有适配 1.6 起的 API 变更，见 7.2.34.toml 同段注释。
 flags = [
   "--with-openssl",
-  "--with-zip", "--with-curl",
+  "--enable-zip", "--with-libzip=no", "--with-curl",
   "--with-gd", "--with-freetype-dir=/usr", "--with-jpeg-dir=/usr", "--with-png-dir=/usr",
   "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+  "--enable-opcache",
+  # 基础扩展集，见 5.4.45.toml 同一段注释。
+  "--with-zlib", "--with-iconv", "--enable-phar",
+  "--enable-bcmath", "--enable-sockets", "--enable-exif", "--enable-pcntl",
 ]
 
 [extensions]

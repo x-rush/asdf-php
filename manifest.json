@@ -4,11 +4,18 @@
   "artifact_base": "https://github.com/x-rush/asdf-php/releases/download",
   "artifact_url_template": "{base}/php-{version}/php-{version}-{os}-{arch}.tar.gz",
   "platforms": {
-    "published": ["linux-x86_64"],
-    "planned": ["linux-arm64", "darwin-x86_64", "darwin-arm64"],
+    "published": [
+      "linux-x86_64"
+    ],
+    "planned": [
+      "linux-arm64",
+      "darwin-x86_64",
+      "darwin-arm64"
+    ],
     "policy": "bin/install refuses any platform not listed in published, before downloading anything, and prints what is available. 'planned' gets a different message than 'unsupported', so an ARM user arriving early learns the platform is coming rather than assuming the project is dead. published is the single source of truth: bin/install's SUPPORTED variable and the README 'Platform support' table must both match it, and scripts/test.sh T3e asserts that they do.",
     "rosetta": "darwin-arm64 falls back to the darwin-x86_64 artifact through Rosetta 2 when no native arm64 build exists. One Intel artifact therefore covers both Intel Macs and Apple Silicon, which halves the macOS build matrix. The fallback is skipped as soon as a native darwin-arm64 artifact is published.",
-    "darwin_caveat": "macOS builds cannot bundle system libraries the way Linux can: libSystem and libc++ are supplied by the OS, so a macOS artifact is tied to its MACOSX_DEPLOYMENT_TARGET (11.0) and is not fully self-contained. Non-system dependencies are bundled and referenced through @loader_path rpath with install_name_tool, and every rewritten Mach-O is re-signed ad-hoc because arm64 refuses an invalid signature."
+    "darwin_caveat": "macOS builds cannot bundle system libraries the way Linux can: libSystem and libc++ are supplied by the OS, so a macOS artifact is tied to its MACOSX_DEPLOYMENT_TARGET (11.0) and is not fully self-contained. Non-system dependencies are bundled and referenced through @loader_path rpath with install_name_tool, and every rewritten Mach-O is re-signed ad-hoc because arm64 refuses an invalid signature.",
+    "legacy_note": "5.4.45 and 5.6.40 have no linux-arm64 target and never will: their base is debian:jessie, whose official multi-arch index carries only 386/amd64/armv5/armv7 (verified with docker buildx imagetools on 2026-11-08). Moving to a base that has arm64 would raise glibc from 2.19 to 2.24/2.31, which is exactly the property those two versions exist for. bin/install reports this as unavailable for that version, not as planned."
   },
   "checksum_policy": "sha256 must be a 64-char lowercase hex string or null. null means NOT BUILT. Never invent a checksum. Build inputs use FILL:<filename> placeholders in versions/*.toml and are filled only by scripts/vendor.sh from bytes it actually downloaded.",
   "channels": {
@@ -19,9 +26,22 @@
     "decided_by": "Scope frozen 2026-11-08: support 5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1+; no unbounded generalization",
     "policy": "6 个 EOL 分支按末版冻结成闭集，编一次、制品存 Releases 永久保留、定义降级为历史档案；8.1 及以上由 current 通道随上游滚动。维护面只剩未来版本。",
     "scope": {
-      "legacy_frozen": ["5.4.45", "5.6.40", "7.2.34", "7.3.33", "7.4.33", "8.0.30", "8.1.34"],
+      "legacy_frozen": [
+        "5.4.45",
+        "5.6.40",
+        "7.2.34",
+        "7.3.33",
+        "7.4.33",
+        "8.0.30",
+        "8.1.34"
+      ],
       "current_from": "8.2",
-      "excluded": ["5.3 及以下", "5.5", "7.0", "7.1"]
+      "excluded": [
+        "5.3 及以下",
+        "5.5",
+        "7.0",
+        "7.1"
+      ]
     },
     "sources": [
       "php.net/eol.php Unsupported Branches — 每个 EOL 分支的末版号（2026-11-08 核对）：5.4.45 / 5.6.40 / 7.2.34 / 7.3.33 / 7.4.33 / 8.0.30 / 8.1.34",
@@ -31,7 +51,10 @@
     "generations": [
       {
         "id": "g1",
-        "php": ["5.4.45", "5.6.40"],
+        "php": [
+          "5.4.45",
+          "5.6.40"
+        ],
         "openssl": "1.0.2u（vendor 冻结，PHP 5.x 无法编 1.1+）",
         "base": "debian:jessie（digest 已冻结）",
         "dockerfile": "build/Dockerfile.g1（多架构活动模板）；build/Dockerfile.5.4 是已发布 amd64 制品的历史档案",
@@ -40,7 +63,12 @@
       },
       {
         "id": "g2",
-        "php": ["7.2.34", "7.3.33", "7.4.33", "8.0.30"],
+        "php": [
+          "7.2.34",
+          "7.3.33",
+          "7.4.33",
+          "8.0.30"
+        ],
         "openssl": "系统 1.1.1w（libssl-dev；绝不能用 3.0）",
         "base": "debian:bullseye-slim（系统 1.1.1；LTS 已于 2026-08-31 结束，Dockerfile 先走活源、失败自动切 archive.debian.org）",
         "dockerfile": "build/Dockerfile.g2",
@@ -49,7 +77,14 @@
       },
       {
         "id": "g3",
-        "php": ["8.1.34", "8.2.x", "8.3.x", "8.4.x", "8.5.x", "future majors"],
+        "php": [
+          "8.1.34",
+          "8.2.x",
+          "8.3.x",
+          "8.4.x",
+          "8.5.x",
+          "future majors"
+        ],
         "openssl": "系统 3.0（libssl-dev）",
         "base": "debian:bookworm-slim（常规支持到 2028-06，活源）",
         "dockerfile": "build/Dockerfile.g3",
@@ -67,13 +102,34 @@
     "extension_tiers": {
       "_source": "WSL Surý apt 实测（2026-11-08 mise 迁移验收日志）作为分档锚点；跨版本的收敛选择见 values",
       "values": {
-        "5.4.45": {"redis": "2.2.8", "swoole": "1.10.5"},
-        "5.6.40": {"redis": "2.2.8", "swoole": "1.10.5"},
-        "7.2.34": {"redis": "5.3.7", "swoole": "4.8.13"},
-        "7.3.33": {"redis": "5.3.7", "swoole": "4.8.13"},
-        "7.4.33": {"redis": "5.3.7", "swoole": "4.8.13"},
-        "8.0.30": {"redis": "5.3.7", "swoole": "4.8.13"},
-        "8.1.34": {"redis": "5.3.7", "swoole": "4.8.13"}
+        "5.4.45": {
+          "redis": "2.2.8",
+          "swoole": "1.10.5"
+        },
+        "5.6.40": {
+          "redis": "2.2.8",
+          "swoole": "1.10.5"
+        },
+        "7.2.34": {
+          "redis": "5.3.7",
+          "swoole": "4.8.13"
+        },
+        "7.3.33": {
+          "redis": "5.3.7",
+          "swoole": "4.8.13"
+        },
+        "7.4.33": {
+          "redis": "5.3.7",
+          "swoole": "4.8.13"
+        },
+        "8.0.30": {
+          "redis": "5.3.7",
+          "swoole": "4.8.13"
+        },
+        "8.1.34": {
+          "redis": "5.3.7",
+          "swoole": "4.8.13"
+        }
       },
       "rationale": "刻意收敛成 4 份扩展源码而不是 14 份：phpredis 2.2.8 只给 PHP 5.x，5.3.7 覆盖 7.0-8.2；swoole 1.10.5 只给 5.x，4.8.13 覆盖 7.2-8.2。版本矩阵越大，扩展源码份数越该收敛，否则每份都是一次独立的编译风险。"
     },
@@ -100,15 +156,21 @@
         "label": "INSECURE",
         "reason": "PHP 5.4 has no upstream or third-party security fixes; treat as an offline migration tool only."
       },
-      "extensions": { "swoole": "1.10.5", "redis": "2.2.8" },
+      "extensions": {
+        "swoole": "1.10.5",
+        "redis": "2.2.8"
+      },
       "artifacts": {
         "linux-x86_64": {
           "name": "php-5.4.45-linux-x86_64.tar.gz",
           "sha256": "21b9a98ab9cda5a23d65cd36e8be8b9a4548d05473e668a623eb45f59302f3b4",
           "status": "published"
         },
-        "linux-arm64": { "name": "php-5.4.45-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-5.4.45-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" }
+        "darwin-x86_64": {
+          "name": "php-5.4.45-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     },
     {
@@ -122,11 +184,21 @@
         "label": "INSECURE",
         "reason": "PHP 5.6 has no upstream security fixes since 2018-12; offline migration tool only."
       },
-      "extensions": { "redis": "2.2.8", "swoole": "1.10.5" },
+      "extensions": {
+        "redis": "2.2.8",
+        "swoole": "1.10.5"
+      },
       "artifacts": {
-        "linux-x86_64": { "name": "php-5.6.40-linux-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "linux-arm64": { "name": "php-5.6.40-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-5.6.40-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" }
+        "linux-x86_64": {
+          "name": "php-5.6.40-linux-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-x86_64": {
+          "name": "php-5.6.40-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     },
     {
@@ -140,11 +212,26 @@
         "label": "INSECURE",
         "reason": "PHP 7.2 has no upstream security fixes since 2020-11; offline migration tool only."
       },
-      "extensions": { "redis": "5.3.7", "swoole": "4.8.13" },
+      "extensions": {
+        "redis": "5.3.7",
+        "swoole": "4.8.13"
+      },
       "artifacts": {
-        "linux-x86_64": { "name": "php-7.2.34-linux-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "linux-arm64": { "name": "php-7.2.34-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-7.2.34-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" }
+        "linux-x86_64": {
+          "name": "php-7.2.34-linux-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "linux-arm64": {
+          "name": "php-7.2.34-linux-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-x86_64": {
+          "name": "php-7.2.34-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     },
     {
@@ -158,11 +245,26 @@
         "label": "INSECURE",
         "reason": "PHP 7.3 has no upstream security fixes since 2021-12; offline migration tool only."
       },
-      "extensions": { "redis": "5.3.7", "swoole": "4.8.13" },
+      "extensions": {
+        "redis": "5.3.7",
+        "swoole": "4.8.13"
+      },
       "artifacts": {
-        "linux-x86_64": { "name": "php-7.3.33-linux-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "linux-arm64": { "name": "php-7.3.33-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-7.3.33-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" }
+        "linux-x86_64": {
+          "name": "php-7.3.33-linux-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "linux-arm64": {
+          "name": "php-7.3.33-linux-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-x86_64": {
+          "name": "php-7.3.33-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     },
     {
@@ -176,11 +278,26 @@
         "label": "INSECURE",
         "reason": "PHP 7.4 has no upstream security fixes since 2022-11; offline migration tool only."
       },
-      "extensions": { "redis": "5.3.7", "swoole": "4.8.13" },
+      "extensions": {
+        "redis": "5.3.7",
+        "swoole": "4.8.13"
+      },
       "artifacts": {
-        "linux-x86_64": { "name": "php-7.4.33-linux-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "linux-arm64": { "name": "php-7.4.33-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-7.4.33-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" }
+        "linux-x86_64": {
+          "name": "php-7.4.33-linux-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "linux-arm64": {
+          "name": "php-7.4.33-linux-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-x86_64": {
+          "name": "php-7.4.33-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     },
     {
@@ -194,12 +311,31 @@
         "label": "INSECURE",
         "reason": "PHP 8.0 has no upstream security fixes since 2023-11; offline migration tool only."
       },
-      "extensions": { "redis": "5.3.7", "swoole": "4.8.13" },
+      "extensions": {
+        "redis": "5.3.7",
+        "swoole": "4.8.13"
+      },
       "artifacts": {
-        "linux-x86_64": { "name": "php-8.0.30-linux-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "linux-arm64": { "name": "php-8.0.30-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-8.0.30-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-arm64": { "name": "php-8.0.30-darwin-arm64.tar.gz", "sha256": null, "status": "not_built" }
+        "linux-x86_64": {
+          "name": "php-8.0.30-linux-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "linux-arm64": {
+          "name": "php-8.0.30-linux-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-x86_64": {
+          "name": "php-8.0.30-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-arm64": {
+          "name": "php-8.0.30-darwin-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     },
     {
@@ -213,12 +349,31 @@
         "label": "INSECURE",
         "reason": "PHP 8.1 reached end of life on 2025-12-31; offline migration tool only."
       },
-      "extensions": { "redis": "5.3.7", "swoole": "4.8.13" },
+      "extensions": {
+        "redis": "5.3.7",
+        "swoole": "4.8.13"
+      },
       "artifacts": {
-        "linux-x86_64": { "name": "php-8.1.34-linux-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "linux-arm64": { "name": "php-8.1.34-linux-arm64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-x86_64": { "name": "php-8.1.34-darwin-x86_64.tar.gz", "sha256": null, "status": "not_built" },
-        "darwin-arm64": { "name": "php-8.1.34-darwin-arm64.tar.gz", "sha256": null, "status": "not_built" }
+        "linux-x86_64": {
+          "name": "php-8.1.34-linux-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "linux-arm64": {
+          "name": "php-8.1.34-linux-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-x86_64": {
+          "name": "php-8.1.34-darwin-x86_64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        },
+        "darwin-arm64": {
+          "name": "php-8.1.34-darwin-arm64.tar.gz",
+          "sha256": null,
+          "status": "not_built"
+        }
       }
     }
   ],

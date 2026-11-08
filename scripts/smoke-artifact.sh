@@ -184,13 +184,19 @@ done
 # 编出来照样能跑，只是图像函数全没了。这类坑只能在运行时按函数直探。
 cat > "$d/.feature-probe.php" <<'PHP'
 <?php
+// Every one of these is off by default in this PHP version. Probing the
+// function, not the flag, is the only check that cannot be fooled: configure
+// happily accepts a renamed option and just builds without the extension.
 $want = ['mb_strlen', 'curl_init', 'imagecreatefromjpeg', 'imagecreatefrompng',
-         'imagecreatetruecolor', 'mysqli_connect', 'openssl_encrypt', 'gzencode'];
+         'imagecreatetruecolor', 'mysqli_connect', 'openssl_encrypt',
+         'gzencode', 'gzdecode', 'iconv', 'bcadd', 'socket_create',
+         'exif_read_data', 'pcntl_fork'];
 $missing = [];
 foreach ($want as $f) {
     if (!function_exists($f)) { $missing[] = $f; }
 }
 if (!class_exists('ZipArchive')) { $missing[] = 'ZipArchive'; }
+if (!class_exists('Phar')) { $missing[] = 'Phar'; }
 $drivers = class_exists('PDO') ? PDO::getAvailableDrivers() : array();
 if (!in_array('mysql', $drivers)) { $missing[] = 'pdo_mysql'; }
 echo $missing ? 'MISSING ' . implode(' ', $missing) : 'OK';
@@ -198,9 +204,24 @@ PHP
 probe="$("$d/bin/php" "$d/.feature-probe.php" 2>&1 || true)"
 rm -f "$d/.feature-probe.php"
 case "$probe" in
-  OK) echo "  [PASS] feature probe: mbstring curl gd(jpeg,png) mysqli pdo_mysql openssl zip zlib" ;;
+  OK) echo "  [PASS] feature probe: mbstring curl gd(jpeg,png) mysqli pdo_mysql openssl zip zlib iconv phar bcmath sockets exif pcntl" ;;
   *)  echo "  [FAIL] feature probe: ${probe:-<no output>} — a configure flag is wrong for this version"
+      echo "         cross-check with: python3 scripts/check-flags.py . --versions ${expected:-<version>}"
       exit 1 ;;
+esac
+
+# OPcache 编进制品但不默认启用（zend_extension 要显式打开，CLI 下默认也无收益）。
+# 这里验的是「装得进、能加载」，不改变解包即用的默认行为。5.4 没有 opcache。
+case "$expected" in
+  5.4.*) ;;
+  *)
+    oc="$("$d/bin/php" -d zend_extension=opcache.so -r 'echo extension_loaded("Zend OPcache") ? "ok" : "no";' 2>&1 | tail -1)"
+    case "$oc" in
+      ok) echo "  [PASS] opcache.so present and loadable" ;;
+      *)  echo "  [FAIL] opcache: ${oc:-<no output>} (expected for >=5.5, see versions/${expected:-?}.toml)"
+          exit 1 ;;
+    esac
+    ;;
 esac
 
 # 5) build identity: proves the frozen toolchain was actually used

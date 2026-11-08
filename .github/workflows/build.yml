@@ -102,9 +102,10 @@ jobs:
           print('definitions + templates consistent for', len(scope), 'versions')
           PY
       - name: Configure flags are valid for their PHP version
-        # 每条 flag 的雷区都在 gen-build-inputs.py 里：--with-mysql 在 7.0 被移除、
-        # --enable-zip 在 7.2 换成 --with-zip、8.1 起 --with-gd 变成 --enable-gd……
-        # 写错不会报错，只会编出一个缺功能的制品，所以在 validate 阶段就跑到。
+        # 这里只做展开 + 拦截「写了一定错」的组合（表在 gen-build-inputs.py：
+        # --with-mysql 在 7.0 被移除、zip 在 7.4 换成 --with-zip、gd 在 7.4 换成
+        # --enable-gd……）。真正的「这个版本到底认哪些选项」要在 vendor 之后拿源码
+        # 说话，见 build-linux 的 "Flags match this PHP version's own configure"。
         run: |
           for v in 5.4.45 5.6.40 7.2.34 7.3.33 7.4.33 8.0.30 8.1.34; do
             python3 scripts/gen-build-inputs.py "$v"
@@ -121,6 +122,15 @@ jobs:
       matrix:
         version: [5.4.45, 5.6.40, 7.2.34, 7.3.33, 7.4.33, 8.0.30, 8.1.34]
         platform: [linux-x86_64, linux-arm64]
+        # 5.4/5.6 的 base 是 debian:jessie，官方索引里没有 arm64（只有
+        # 386/amd64/armv5/armv7），这两个组合不可能产出制品。留在这里的后果
+        # 是每次 dispatch 都在 arm runner 上空转四十分钟，最后上传一个定义里
+        # 已经不存在的制品。版本侧的同一结论见 bin/install 的 UNAVAILABLE。
+        exclude:
+          - version: 5.4.45
+            platform: linux-arm64
+          - version: 5.6.40
+            platform: linux-arm64
     # arm64 必须用原生 runner：QEMU 下编 PHP 要数小时，而且会把真实失败掩盖成超时。
     runs-on: ${{ matrix.platform == 'linux-arm64' && 'ubuntu-24.04-arm' || 'ubuntu-22.04' }}
     steps:
@@ -164,6 +174,12 @@ jobs:
             echo "::error::build inputs drifted from the committed definition — refusing to build" >&2
             exit 1
           fi
+      - name: Flags match this PHP version's own configure
+        # 选项名以源码为准：gd 在 7.4 从 --with-gd 变成 --enable-gd，zip 到 7.4
+        # 才变成 --with-zip。写旧名字 configure 只打一行警告，然后编出一个缺整块
+        # 功能的 PHP。这里读的是刚 vendor 下来的 config.m4，编译前就能判死刑；
+        # 同时检查「默认关闭但必须有」的那批扩展没被漏掉（zlib/iconv/phar/...）。
+        run: python3 scripts/check-flags.py . --versions "${{ matrix.version }}"
       - name: Expand definition into build inputs
         # 三个 Dockerfile 都 COPY build/.gen/，而 .gen 是生成物（gitignore）。
         # l2.sh 会在本地第 2/6 步生成它，CI 没人干这活 —— 少了这步 docker build

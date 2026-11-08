@@ -49,7 +49,8 @@ else
 fi
 
 if python3 -m py_compile "$root/scripts/gen-build-inputs.py" "$root/scripts/vendor-ledger.py" \
-        "$root/scripts/fill-placeholders.py" "$root/scripts/verify-hashes.py" 2>"$tmp/py.err"; then
+        "$root/scripts/fill-placeholders.py" "$root/scripts/verify-hashes.py" \
+        "$root/scripts/check-flags.py" 2>"$tmp/py.err"; then
   pass "T1b build helper scripts compile"
 else
   fail "T1b python syntax: $(cat "$tmp/py.err")"
@@ -197,12 +198,23 @@ for ver in scope:
 # 少一条就让已产出的平台无人知晓 —— 两种都会让 bin/install 说错话。
 known = {"linux-x86_64", "linux-arm64", "darwin-x86_64", "darwin-arm64"}
 by_ver = {v["version"]: v for v in m["versions"]}
+
+# bin/install 的 UNAVAILABLE 声明了「该版本永远不会有」的平台（jessie 两代的
+# linux-arm64，见其注释）。默认要求每个版本都覆盖两个 Linux 架构，被明确排除的
+# 除外 —— 这样既不会漏掉真正该建的平台，也不用把例外表复制三份。
+import re
+mm = re.search(r'^UNAVAILABLE="([^"]*)"', (root / "bin" / "install").read_text(encoding="utf-8"), re.M)
+excluded = {tuple(e.split(":", 1)) for e in (mm.group(1).split() if mm else [])}
+
 for ver in scope:
     d = tomllib.load((root / "versions" / f"{ver}.toml").open("rb"))
     targets = set(d.get("artifact", {}).get("targets", []))
     assert targets, f"{ver}: [artifact].targets is missing"
     assert targets <= known, f"{ver}: unknown platform(s) {targets - known}"
-    assert {"linux-x86_64", "linux-arm64"} <= targets, f"{ver}: must target both Linux arches"
+    want = {"linux-x86_64", "linux-arm64"} - {p for (v, p) in excluded if v == ver}
+    assert want <= targets, f"{ver}: must target {sorted(want)}"
+    assert not ({p for (v, p) in excluded if v == ver} & targets), \
+        f"{ver}: platform declared unavailable but still targeted"
     arts = by_ver[ver]["artifacts"]
     assert set(arts) == targets, f"{ver}: manifest artifacts {sorted(arts)} != toml targets {sorted(targets)}"
     for plat, a in arts.items():
@@ -351,6 +363,88 @@ if python3 "$root/scripts/verify-hashes.py" "$tmp/vh" "$tmp/vh/vendor" >/dev/nul
   pass "T3n matching hash passes; unfrozen (FILL:) and not-yet-fetched inputs are skipped"
 else
   fail "T3n verify-hashes rejected a valid tree"
+fi
+
+# T3o: configure 选项名必须对着该版本自己的 config.m4 校验，不能靠版本表记忆。
+# 一棵假源码树就够复现两类真实事故：gd 在 7.4 从 --with-gd 改名成 --enable-gd
+# （写旧名 → configure 只警告 → gd 整块静默缺席），以及漏写 --with-zlib
+# （根本没有警告，编出来的 PHP 就是没有 gzencode）。
+# tarball 必须落在 repo/vendor/ 下：那是 toml 里 [source].path 的相对根。
+# 放错地方时 check-flags 会走 "skip: not vendored yet" 分支并 exit 0，
+# 第一个断言就会假通过 —— 所以下面还要断言它真的读到了 flags。
+mkdir -p "$tmp/t3o/repo/vendor" "$tmp/t3o/repo/versions"
+python3 - "$tmp/t3o/repo" <<'PY'
+import io, pathlib, sys, tarfile
+root = pathlib.Path(sys.argv[1])
+files = {
+    "ext/gd/config.m4": "PHP_ARG_ENABLE([gd], [for GD support], "
+                        "[AS_HELP_STRING([--enable-gd], [])], [no])\n",
+    "ext/zlib/config0.m4": "PHP_ARG_WITH([zlib], [for ZLIB support], "
+                           "[AS_HELP_STRING([--with-zlib[=DIR]], [])], [no])\n",
+}
+with tarfile.open(root / "vendor" / "php-9.9.9.tar.gz", "w:gz") as tf:
+    for rel, body in files.items():
+        data = body.encode()
+        info = tarfile.TarInfo(f"php-9.9.9/{rel}")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+PY
+mk_t3o() {  # $1 = flags 列表字面量
+  printf '%s\n' 'version = "9.9.9"' '[source]' 'path = "vendor/php-9.9.9.tar.gz"' \
+    '[configure]' "flags = [$1]" > "$tmp/t3o/repo/versions/9.9.9.toml"
+}
+
+mk_t3o '"--enable-gd", "--with-zlib"'
+if python3 "$root/scripts/check-flags.py" "$tmp/t3o/repo" --versions 9.9.9 >"$tmp/t3o.ok" 2>&1 \
+   && grep -q '9.9.9: 2 flags' "$tmp/t3o.ok"; then
+  pass "T3o correct flags pass against the version's own config.m4"
+else
+  # 不加 grep 的话，"源码没 vendor → skip → exit 0" 会让这条断言假通过。
+  fail "T3o check-flags rejected a valid definition: $(tail -2 "$tmp/t3o.ok")"
+fi
+
+mk_t3o '"--with-gd", "--with-zlib"'
+if python3 "$root/scripts/check-flags.py" "$tmp/t3o/repo" --versions 9.9.9 >"$tmp/t3o.bad" 2>&1; then
+  fail "T3o renamed option (--with-gd) must be rejected"
+elif grep -q 'does not know --with-gd' "$tmp/t3o.bad" && grep -q 'did you mean: --enable-gd' "$tmp/t3o.bad"; then
+  pass "T3o --with-gd rejected with the rename suggested"
+else
+  fail "T3o rejection message unhelpful: $(tail -2 "$tmp/t3o.bad")"
+fi
+
+mk_t3o '"--enable-gd"'
+if python3 "$root/scripts/check-flags.py" "$tmp/t3o/repo" --versions 9.9.9 >"$tmp/t3o.miss" 2>&1; then
+  fail "T3o omitted --with-zlib must be caught (silently absent extension)"
+elif grep -q 'required extension not requested' "$tmp/t3o.miss" \
+     && grep -q 'with-zlib' "$tmp/t3o.miss"; then
+  pass "T3o omitted required extension reported by name"
+else
+  fail "T3o missing-extension message unhelpful: $(tail -2 "$tmp/t3o.miss")"
+fi
+
+# T3p: 「这个版本永远不会有」必须和「还没做」分开说。debian:jessie 的官方多架构
+# 索引里没有 arm64（386/amd64/armv5/armv7），所以 5.4/5.6 的 linux-arm64 不会存在；
+# 若只留在全局 PLANNED 里，ARM 用户会一直等一个永远不会出现的制品。
+# 约束：UNAVAILABLE 的每条不得与该版本 targets 重叠，且必须覆盖 jessie 两代。
+unavail="$(sed -n 's/^UNAVAILABLE="\(.*\)"$/\1/p' "$root/bin/install" | head -1)"
+if python3 - "$root" "$unavail" <<'PY' 2>"$tmp/t3p.err"
+import pathlib, sys, tomllib
+root, raw = pathlib.Path(sys.argv[1]), sys.argv[2]
+entries = raw.split()
+assert entries, "UNAVAILABLE is empty"
+for e in entries:
+    ver, plat = e.split(":", 1)
+    d = tomllib.loads((root / "versions" / f"{ver}.toml").read_text(encoding="utf-8"))
+    targets = d.get("artifact", {}).get("targets", [])
+    assert plat not in targets, f"{ver} calls {plat} unavailable but still lists it in targets"
+assert {"5.4.45", "5.6.40"} <= {e.split(":")[0] for e in entries}, \
+    "jessie-based versions must be listed in UNAVAILABLE"
+print("ok")
+PY
+then
+  pass "T3p unavailable platforms disjoint from targets and cover jessie ($unavail)"
+else
+  fail "T3p unavailable-platform contract: $(tail -2 "$tmp/t3p.err")"
 fi
 
 echo "== asdf-php v2 / L1 artifact-repo contract =="
@@ -537,6 +631,29 @@ FAKE_DARWIN
   else
     fail "T8d wrong Rosetta path: $(tail -2 "$tmp/rosetta.out")"
   fi
+fi
+
+# T8e: 「这个版本永远不会有」和「还没做」必须说成两句话。jessie 没有 arm64 索引，
+# 5.4/5.6 的 linux-arm64 不会存在；若它落进 planned，ARM 用户会一直等一个永远不来
+# 的制品，而正确答案是「换 7.2+」。
+mkdir -p "$tmp/fakebin-arm"
+cat > "$tmp/fakebin-arm/uname" <<'FAKE_ARM'
+#!/bin/sh
+case "${1:-}" in
+  -m) echo aarch64 ;;
+  *)  echo Linux ;;
+esac
+FAKE_ARM
+chmod +x "$tmp/fakebin-arm/uname"
+if ( cd "$tmp" && PATH="$tmp/fakebin-arm:$PATH" \
+      ASDF_INSTALL_VERSION="5.4.45" ASDF_INSTALL_PATH="i_arm54" \
+      bash "$root/bin/install" ) >"$tmp/arm54.out" 2>&1; then
+  fail "T8e 5.4.45 on linux-arm64 should have been refused"
+elif grep -q 'will not be built for linux-arm64' "$tmp/arm54.out" \
+     && ! grep -q 'planned but not published' "$tmp/arm54.out"; then
+  pass "T8e jessie generation: arm64 refused as 'will not be built', not 'planned'"
+else
+  fail "T8e wrong message for 5.4.45 on arm64: $(tail -2 "$tmp/arm54.out")"
 fi
 
 echo "== asdf-php v2 / L1' relocation unit test =="

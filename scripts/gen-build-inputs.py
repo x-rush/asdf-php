@@ -10,8 +10,11 @@
 
 为什么要这一步：configure flags 必须只有一个真相源。以前 5.4 是「Dockerfile 里
 写死一份 + toml 里再抄一份」，两处迟早漂移；而 flags 漂移的后果不是报错，是某个
-扩展静默缺席（--with-mysql 在 PHP 7.0 被移除、--with-gd 在 8.1 改名成 --enable-gd，
+扩展静默缺席（--with-mysql 在 PHP 7.0 被移除、--with-gd 在 7.4 改名成 --enable-gd，
 都只警告不失败）。所以这里既做展开，也做**已知雷区的硬拦截**。
+
+本文件只拦「写了一定错」的组合；「该写的漏了」由 scripts/check-flags.py 负责，
+它直接读冻结的 PHP 源码里的 config.m4，选项名以源码为准而不是以这张表为准。
 """
 from __future__ import annotations
 
@@ -32,8 +35,15 @@ gen = root / "build" / ".gen"
 FORBIDDEN = [
     # (flag 前缀, 起始版本, 结束版本, 原因)
     ("--with-mysql", (7, 0), (99, 99), "ext/mysql 在 PHP 7.0 被移除，写了也不生效，只会让 mysql 扩展缺席"),
-    ("--enable-zip", (7, 2), (99, 99), "PHP 7.2 起 zip 改用 libzip，flag 是 --with-zip"),
-    ("--with-gd", (8, 1), (99, 99), "PHP 8.1 起 GD 开关是 --enable-gd，--with-gd 只警告不生效"),
+    # zip 的分界是 7.4，不是 7.2：php-7.2.34 / 7.3.33 的 ext/zip/config.m4 只声明
+    # PHP_ARG_ENABLE(zip)（外加一个可选的 --with-libzip），--with-zip 到 7.4 才存在。
+    # 2026-11-08 用 scripts/check-flags.py 直接在源码上查实，此前这里写的是 7.2。
+    ("--enable-zip", (7, 4), (99, 99), "PHP 7.4 起 zip 改用系统 libzip，flag 是 --with-zip"),
+    ("--with-zip", (0, 0), (7, 3), "PHP 7.4 才有 --with-zip；7.2/7.3 是 bundled 的 --enable-zip"),
+    ("--with-libzip", (7, 4), (99, 99), "PHP 7.4 起 libzip 只能经由 --with-zip 启用"),
+    # gd 的分界同样是 7.4：php-7.4.33 与 php-8.0.30 的 ext/gd/config.m4 都只声明
+    # PHP_ARG_ENABLE(gd)，--with-gd 在 8.0 上就已经是未识别选项。
+    ("--with-gd", (7, 4), (99, 99), "PHP 7.4 起 GD 开关是 --enable-gd，--with-gd 只警告不生效"),
     ("--with-freetype-dir", (7, 4), (99, 99), "PHP 7.4 起改名为 --with-freetype"),
     ("--with-jpeg-dir", (7, 4), (99, 99), "PHP 7.4 起改名为 --with-jpeg"),
     ("--with-png-dir", (7, 4), (99, 99), "PHP 7.4 起 png 由 libpng pkg-config 自动发现"),

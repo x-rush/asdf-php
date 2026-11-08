@@ -28,6 +28,12 @@ flags = [
   "--with-zip", "--with-curl",
   "--enable-gd", "--with-freetype", "--with-jpeg",
   "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+  "--enable-opcache",
+  # 基础扩展集，见 5.4.45.toml 同一段注释。缺 zlib 就是这一条的代价：
+  # 2026-11-08 的 8.1.34 L2 除了 gzencode 之外全绿，58 个自包含库、
+  # redis/swoole 都加载，唯独 gz* 系列函数不存在。
+  "--with-zlib", "--with-iconv", "--enable-phar",
+  "--enable-bcmath", "--enable-sockets", "--enable-exif", "--enable-pcntl",
 ]
 
 [extensions]

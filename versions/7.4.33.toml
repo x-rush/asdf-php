@@ -23,11 +23,18 @@ cflags = "-O2"
 # 7.4 起 gd 的外部库开关改名：--with-freetype-dir / --with-jpeg-dir 已移除，
 # 换成 --with-freetype / --with-jpeg；同时 mbstring 不再自带 oniguruma，
 # 依赖 apt 的 libonig-dev（Dockerfile.g2 的 PKGS 里已含）。
+# 同一次改动里 gd 本身也从 --with-gd 变成 --enable-gd（php-7.4.33 的
+# ext/gd/config.m4 只声明 PHP_ARG_ENABLE），旧写法会被 configure 忽略、
+# gd 整块缺席 —— 之前的定义就踩了这个坑，check-flags.py 查实并已改正。
 flags = [
   "--with-openssl",
   "--with-zip", "--with-curl",
-  "--with-gd", "--with-freetype", "--with-jpeg",
+  "--enable-gd", "--with-freetype", "--with-jpeg",
   "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+  "--enable-opcache",
+  # 基础扩展集，见 5.4.45.toml 同一段注释。
+  "--with-zlib", "--with-iconv", "--enable-phar",
+  "--enable-bcmath", "--enable-sockets", "--enable-exif", "--enable-pcntl",
 ]
 
 [extensions]

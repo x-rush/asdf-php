@@ -25,10 +25,18 @@ SUPPORTED="linux-x86_64"
 # "planned" instead of "unsupported" matters: a user who came for 7.4 on ARM
 # should not conclude the project is dead.
 PLANNED="linux-arm64 darwin-x86_64 darwin-arm64"
+# Versions that will never have a given platform, as opposed to not having one
+# yet. Conflating the two is the difference between "wait a month" and "this
+# combination does not exist": 5.4/5.6 build on debian:jessie, whose official
+# multi-arch index is 386/amd64/armv5/armv7 only, and moving to a base with
+# arm64 would raise glibc past 2.19, which is the whole point of those versions.
+# Must stay disjoint from each version's [artifact].targets; T3p asserts it.
+UNAVAILABLE="5.4.45:linux-arm64 5.6.40:linux-arm64"
 # Test seam only: scripts/test.sh overrides these to exercise the Rosetta
 # fallback before darwin artifacts exist. Production never sets them.
 [ -n "${ASDF_PHP_SUPPORTED:-}" ] && SUPPORTED="$ASDF_PHP_SUPPORTED"
 [ -n "${ASDF_PHP_PLANNED:-}" ] && PLANNED="$ASDF_PHP_PLANNED"
+[ -n "${ASDF_PHP_UNAVAILABLE:-}" ] && UNAVAILABLE="$ASDF_PHP_UNAVAILABLE"
 
 is_supported() { case " $SUPPORTED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -51,6 +59,18 @@ ROSETTA
       exit 1
     fi
   else
+    case " $UNAVAILABLE " in
+      *" ${v}:${plat} "*)
+        cat >&2 <<EOF
+asdf-php: PHP ${v} will not be built for ${plat}.
+          The base image for this version (debian:jessie) publishes no arm64
+          build, and the reason ${v} exists is that it runs against glibc 2.19 —
+          which a newer base would take away. This is a deliberate limit, not a
+          missing milestone, so there is nothing to wait for.
+          For arm64 use 7.2 and newer: asdf install php 7.4.33
+EOF
+        exit 1 ;;
+    esac
     echo "asdf-php: no prebuilt artifact for ${plat}" >&2
     echo "asdf-php: currently published: ${SUPPORTED}" >&2
     case " $PLANNED " in

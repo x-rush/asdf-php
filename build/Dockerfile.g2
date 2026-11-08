@@ -33,7 +33,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN set -eux; \
     PKGS="build-essential autoconf re2c pkg-config file dpkg-dev bison \
       libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
-      libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
+      zlib1g-dev libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
       libsqlite3-dev libargon2-dev"; \
     if apt-get update && apt-get install -y --no-install-recommends $PKGS; then \
       echo "apt: live bullseye mirror"; \

@@ -39,7 +39,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --allow-unauthenticated --no-install-recommends \
       build-essential autoconf re2c pkg-config file dpkg-dev bison \
-      libxml2-dev libcurl4-gnutls-dev libjpeg-dev libpng-dev \
+      zlib1g-dev libxml2-dev libcurl4-gnutls-dev libjpeg-dev libpng-dev \
       libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev; \
     rm -rf /var/lib/apt/lists/*
 

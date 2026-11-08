@@ -24,12 +24,22 @@ cflags = "-O2 -fcommon"
 
 [configure]
 # 7.2 的 gd 仍用 *-dir 形式；7.4 起改名为 --with-freetype / --with-jpeg。
+# zip 在这一代还是 bundled 实现，选项是 --enable-zip；--with-zip 从 7.4 才
+# 生效（7.2/7.3 写 --with-zip 会得到 "unrecognized option" 然后整块 ZipArchive
+# 静默缺席，2026-11-08 由 scripts/check-flags.py 在 php-7.2.34 源码上查实）。
 # 写错不会报错、只会少块功能，所以 smoke 里加了函数级探针把「静默缺功能」拦住。
 flags = [
   "--with-openssl",
-  "--with-zip", "--with-curl",
+  # --with-libzip=no 是必须的：7.2/7.3 的 ext/zip 在 libzip != no 时才会去用系统
+  # libzip，而 bullseye 带的是 1.7.3 —— 1.6 起 zip_source_begin_write 换了签名，
+  # PHP 7.4 才适配，7.2/7.3 编不过。钉死在 bundled 实现上（自带 1.2.x）。
+  "--enable-zip", "--with-libzip=no", "--with-curl",
   "--with-gd", "--with-freetype-dir=/usr", "--with-jpeg-dir=/usr", "--with-png-dir=/usr",
   "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+  "--enable-opcache",
+  # 基础扩展集，见 5.4.45.toml 同一段注释。
+  "--with-zlib", "--with-iconv", "--enable-phar",
+  "--enable-bcmath", "--enable-sockets", "--enable-exif", "--enable-pcntl",
 ]
 
 [extensions]

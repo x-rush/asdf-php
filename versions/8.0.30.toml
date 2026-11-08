@@ -21,12 +21,18 @@ openssl = "system 1.1.1 (libssl-dev)"
 cflags = "-O2"
 
 [configure]
-# 8.0 的 gd 仍是 --with-gd（8.1 才改成 --enable-gd），这里保持 7.4 的写法。
+# gd 从 7.4 起就是 --enable-gd，8.0 沿用（此前这里写的 "--with-gd（8.1 才
+# 改名）" 是错的，php-8.0.30 的 ext/gd/config.m4 同样只认 PHP_ARG_ENABLE，
+# 2026-11-08 用 scripts/check-flags.py 在真实源码上查实）。
 flags = [
   "--with-openssl",
   "--with-zip", "--with-curl",
-  "--with-gd", "--with-freetype", "--with-jpeg",
+  "--enable-gd", "--with-freetype", "--with-jpeg",
   "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+  "--enable-opcache",
+  # 基础扩展集，见 5.4.45.toml 同一段注释。
+  "--with-zlib", "--with-iconv", "--enable-phar",
+  "--enable-bcmath", "--enable-sockets", "--enable-exif", "--enable-pcntl",
 ]
 
 [extensions]
