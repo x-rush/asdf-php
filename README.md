@@ -22,7 +22,15 @@ This plugin removes the compiler from the user's machine entirely. Builds happen
 
 **Early.** Only `5.4.45` on `linux-x86_64` is published today. The rest of the support matrix below is planned, not available — `asdf list-all php` shows exactly what exists.
 
-This is not a drop-in replacement for a source-building plugin yet. If you need PHP 7.4 or 8.x today, use a source-building plugin.
+The point of this plugin is the versions a source build cannot reach. For PHP 7.x and 8.x, a source-building plugin still works on most machines, just slowly.
+
+**If you need PHP 7.x or 8.x today, use the v1 plugin.** It is still on the `master` branch and compiles from source:
+
+```bash
+asdf plugin add php https://github.com/x-rush/asdf-php.git master
+```
+
+Come back here for PHP 5.x, or when 7.x/8.x artifacts land. The two branches coexist; neither overwrites the other.
 
 ## Requirements
 
