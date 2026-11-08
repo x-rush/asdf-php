@@ -1,0 +1,17 @@
+{
+  "php-5.4.45.tar.gz": {
+    "sha256": "25bc4723955f4e352935258002af14a14a9810b491a19400d76fcdfa9d04b28f"
+  },
+  "openssl-1.0.2u.tar.gz": {
+    "sha256": "ecd0c6ffb493dd06707d38b14bb4d8c2288bb7033735606569d8f90f89669d16"
+  },
+  "bison-2.7.tar.gz": {
+    "sha256": "19bbe7374fd602f7a6654c131c21a15aebdc06cc89493e8ff250cb7f9ed0a831"
+  },
+  "redis-2.2.8.tgz": {
+    "sha256": "fc533752de62848f645707b65cba9d015ab4ed9c7a978c7bd710a5934d97b1b5"
+  },
+  "swoole-1.10.5.tgz": {
+    "sha256": "5c1dc0b82772ca1c352de4ddf20deeb35f06e4c5a01beba5a446d78a1f747bd2"
+  }
+}
