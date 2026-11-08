@@ -38,6 +38,23 @@ skip() { printf '  [SKIP] %s\n' "$*"; }
 
 echo "== asdf-php v2 / L0 static contract =="
 
+# T0: asdf execs plugin callbacks directly (it does not wrap them in `bash`).
+# A callback without the executable bit in the git index makes
+# `asdf list all php` die with "Permission denied" on Linux. Windows worktrees
+# report +x for every file, so only the index mode is trustworthy here.
+if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  cb_modes="$(git -C "$root" ls-files -s bin/install bin/list-all)"
+  cb_bad="$(printf '%s\n' "$cb_modes" | awk '$1 != "100755" {print $4}')"
+  cb_count="$(printf '%s\n' "$cb_modes" | grep -c .)"
+  if [ "$cb_count" -eq 2 ] && [ -z "$cb_bad" ]; then
+    pass "T0 plugin callbacks executable in git index (bin/install, bin/list-all)"
+  else
+    fail "T0 plugin callback mode: expected two 100755 entries, got [${cb_bad:-missing/incomplete}]"
+  fi
+else
+  skip "T0 executable-bit check (not a git checkout)"
+fi
+
 if bash -n "$root/bin/install" "$root/bin/list-all" "$root/scripts/vendor.sh" \
         "$root/scripts/relocate.sh" "$root/scripts/smoke-artifact.sh" \
         "$root/scripts/pack-artifact.sh" "$root/scripts/pin-base.sh" \

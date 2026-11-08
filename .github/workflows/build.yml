@@ -104,6 +104,21 @@ jobs:
       - name: Run the contract test suite
         run: bash scripts/test.sh
 
+  plugin_test:
+    needs: validate
+    name: Real asdf install (7.4.33)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # asdf-plugins' PR checklist asks for green plugin CI. This is the real
+      # chain, not a mock: clone the plugin at this ref, add it to a clean asdf,
+      # install a published artifact (sha256 verified by bin/install), exec php.
+      - uses: asdf-vm/actions/plugin-test@v4
+        with:
+          command: php -v
+          version: 7.4.33
+          plugin: php
+
   build-linux:
     needs: validate
     # 默认不跑。老版本「不动也会坏」的解法就是根本不重编。

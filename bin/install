@@ -46,9 +46,9 @@ fi
 # NOTE: the three assignments below must stay flush-left. scripts/test.sh reads
 # them with `sed -n 's/^SUPPORTED="..."/.../p'`, so indenting them breaks T3e.
 SUPPORTED="linux-x86_64"
-# Platforms that are designed and being built but have no artifact yet. Saying
-# "planned" instead of "unsupported" matters: a user who came for 7.4 on ARM
-# should not conclude the project is dead.
+# Platforms the gate recognises but for which no artifact has been produced.
+# Saying "planned" instead of "unsupported" matters: a user who came for 7.4
+# on ARM should still get the local-build command rather than a dead end.
 PLANNED="linux-arm64 darwin-x86_64 darwin-arm64"
 # Versions that will never have a given platform, as opposed to not having one
 # yet. Conflating the two is the difference between "wait a month" and "this
@@ -112,7 +112,7 @@ asdf-php: nothing to install for ${plat}.
 EOF
   echo "asdf-php: currently published: ${SUPPORTED}" >&2
   case " $PLANNED " in
-    *" $plat "*) echo "asdf-php: ${plat} is planned but not published yet (see the README roadmap)" >&2 ;;
+    *" $plat "*) echo "asdf-php: ${plat} is planned but not published yet (no build host has produced it; see the Platform support table)" >&2 ;;
   esac
   echo "asdf-php: see the Platform support table in README.md" >&2
   echo "asdf-php: nothing was downloaded; your existing installs are untouched" >&2

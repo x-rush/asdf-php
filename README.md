@@ -93,6 +93,32 @@ If nothing is published for your platform, the installer says so and points at `
 
 Either way the checksum is verified before anything is unpacked, and a mismatch aborts with nothing written to the install path.
 
+### Coming from `asdf-community/asdf-php`
+
+Both routes were checked against asdf 0.20.2 in a clean container. asdf uses the **plugin name as the tool name**, so this choice is not cosmetic.
+
+**Replace the `php` plugin** — `.tool-versions` stays unchanged:
+
+```bash
+asdf plugin remove php                                      # deletes every PHP installed by that plugin
+asdf plugin add php https://github.com/x-rush/asdf-php.git
+asdf install php 7.4.33
+```
+
+`asdf plugin remove php` removed `$ASDF_DATA_DIR/installs/php` in the test. Back up anything you need before running it; installs under a different plugin name survive.
+
+**Keep both, under a second shortname**:
+
+```bash
+asdf plugin add php-prebuilt https://github.com/x-rush/asdf-php.git
+asdf install php-prebuilt 7.4.33
+asdf local php-prebuilt 7.4.33
+```
+
+The `php` shim then resolves to that install (`asdf which php` confirms it). A `.tool-versions` line that still says `php 7.4.33` does **not** resolve to a `php-prebuilt` install — versions are keyed by tool name — so change the line. Both plugins publish the same executables; use one name per project rather than mixing them.
+
+On asdf 0.16+ the command is `asdf list all php-prebuilt`; `asdf list-all` is not a command there.
+
 ## Supported versions
 
 `asdf list-all php` reads `versions.txt`. It lists what can be installed — from a published artifact or from a local build.
