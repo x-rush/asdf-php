@@ -62,22 +62,10 @@ jobs:
                       sys.exit(f"null sha256 must be marked not_built: {v['version']}/{arch}")
           print('manifest checksum fields OK')
           PY
-      - name: Manifest lists only published versions in versions.txt
-        run: |
-          python3 - <<'PY'
-          import json
-          m = json.load(open('manifest.json'))
-          published = {v['version'] for v in m['versions']
-                       if any(a.get('status') == 'published' for a in v['artifacts'].values())}
-          listed = set()
-          for line in open('versions.txt'):
-              line = line.strip()
-              if line and not line.startswith('#'):
-                  listed.add(line.split()[0])
-          if published != listed:
-              raise SystemExit(f"versions.txt {sorted(listed)} != published {sorted(published)}")
-          print('versions.txt matches published artifacts:', sorted(published))
-          PY
+      # versions.txt is checked by the contract suite (T3), not here. It used to
+      # be duplicated in this workflow as `published == listed`, which broke the
+      # moment a version became installable without being published — the same
+      # fact written twice, drifting in the copy nobody updates.
       - name: Every frozen version has a definition and a template
         run: |
           python3 - <<'PY'
