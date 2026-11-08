@@ -1,0 +1,45 @@
+# asdf-php v2 / frozen build definition — G2
+version = "7.2.34"
+channel = "legacy"
+generation = "g2"
+dockerfile = "build/Dockerfile.g2"
+safety = { patched = false, network_policy = "offline-only" }
+
+[source]
+url    = "https://www.php.net/distributions/php-7.2.34.tar.gz"
+path   = "vendor/php-7.2.34.tar.gz"
+sha256 = "FILL:php-7.2.34.tar.gz"
+
+[base]
+# bullseye 自带的 1.1.1 直接够用：8.0 及以下不能配 OpenSSL 3.0（#81540）。
+# pin-base.sh 会把这张 index digest 解析出来并确认 linux/amd64 + linux/arm64 都在。
+image  = "debian:bullseye-slim@sha256:e5b6442dd2e9684cf5e87d8338b5968f3b348636fc0be6d7850a381e3731a2bd"
+suite  = "bullseye"
+openssl = "system 1.1.1 (libssl-dev)"
+
+[build]
+# GCC 10 起 -fno-common 成为默认，PHP 7.2/7.3 里有跨编译单元的重复定义，
+# 不加 -fcommon 会在链接期 multiple definition 直接失败。
+cflags = "-O2 -fcommon"
+
+[configure]
+# 7.2 的 gd 仍用 *-dir 形式；7.4 起改名为 --with-freetype / --with-jpeg。
+# 写错不会报错、只会少块功能，所以 smoke 里加了函数级探针把「静默缺功能」拦住。
+flags = [
+  "--with-openssl",
+  "--with-zip", "--with-curl",
+  "--with-gd", "--with-freetype-dir=/usr", "--with-jpeg-dir=/usr", "--with-png-dir=/usr",
+  "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+]
+
+[extensions]
+# phpredis 5.3.7 覆盖 PHP 7.0-8.2，是 7.x 上最稳的一支；
+# swoole 4.8.13 覆盖 PHP 7.2-8.2，7.2 到 8.1 全部用它，避免一个版本一份源码。
+redis  = "5.3.7"
+swoole = "4.8.13"
+
+[artifact]
+# 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
+# T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
+targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64"]
+name = "php-7.2.34-{os}-{arch}.tar.gz"

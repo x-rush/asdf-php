@@ -1,0 +1,43 @@
+# asdf-php v2 / frozen build definition — G2
+version = "7.4.33"
+channel = "legacy"
+generation = "g2"
+dockerfile = "build/Dockerfile.g2"
+safety = { patched = false, network_policy = "offline-only" }
+
+[source]
+url    = "https://www.php.net/distributions/php-7.4.33.tar.gz"
+path   = "vendor/php-7.4.33.tar.gz"
+sha256 = "FILL:php-7.4.33.tar.gz"
+
+[base]
+image   = "debian:bullseye-slim@sha256:e5b6442dd2e9684cf5e87d8338b5968f3b348636fc0be6d7850a381e3731a2bd"
+suite   = "bullseye"
+openssl = "system 1.1.1 (libssl-dev)"
+
+[build]
+# 7.4 已修掉 -fno-common 相关的重复定义，不再需要 -fcommon。
+cflags = "-O2"
+
+[configure]
+# 7.4 起 gd 的外部库开关改名：--with-freetype-dir / --with-jpeg-dir 已移除，
+# 换成 --with-freetype / --with-jpeg；同时 mbstring 不再自带 oniguruma，
+# 依赖 apt 的 libonig-dev（Dockerfile.g2 的 PKGS 里已含）。
+flags = [
+  "--with-openssl",
+  "--with-zip", "--with-curl",
+  "--with-gd", "--with-freetype", "--with-jpeg",
+  "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+]
+
+[extensions]
+# 7.4 是 phpredis 6.x 的最低要求版本（PECL: PHP >= 7.4.0），但 5.3.7 也完整支持，
+# 统一用 5.3.7 可以减少 vendor 里的源码份数，只在 8.x 才升到 6.x。
+redis  = "5.3.7"
+swoole = "4.8.13"
+
+[artifact]
+# 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
+# T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
+targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64"]
+name = "php-7.4.33-{os}-{arch}.tar.gz"

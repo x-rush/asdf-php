@@ -1,0 +1,71 @@
+# asdf-php v2 / G3 模板：PHP 8.1 及以上 on Debian 12 bookworm
+#
+# 与 G2 的分界就是 OpenSSL：8.1 是第一个支持 OpenSSL 3.0 的分支（bugs.php.net
+# #81540 之前官方明确不对旧分支 backport），所以 8.0 及以下必须停在 1.1.1，
+# 8.1 起才能用 bookworm 的系统 3.0。这条线不能靠"试试看"糊过去。
+#
+# bookworm 的常规支持到 2028-06，现在（2026-11）还是活源，不需要 archive 回退。
+# 等它 EOL 时把 G2 那段 try/fallback 抄过来即可，别提前加无用分支。
+#
+# 与 G2 的 flag 差异（照抄会静默丢功能，T3 系列守着）：
+#   PHP 8.1 起 GD 的开关是 --enable-gd（--with-gd 变成未识别选项，只警告不报错，
+#   结果就是 gd 没编进去），外部库仍用 --with-jpeg / --with-freetype。
+#   sodium 8.1 起默认启用，需要 libsodium-dev。
+ARG BASE_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+FROM ${BASE_IMAGE}
+
+ARG PHP_VERSION=8.1.34
+ARG ARTIFACT_ARCH=x86_64
+ARG PHP_DIR=/opt/php/${PHP_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential autoconf re2c pkg-config file dpkg-dev bison \
+      libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
+      libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
+      libsqlite3-dev libargon2-dev libsodium-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY vendor/ /opt/vendor/
+COPY build/.gen/ /opt/gen/
+COPY scripts/ /opt/scripts/
+
+RUN set -eux; \
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
+    if [ -f "/opt/gen/${PHP_VERSION}.env" ]; then set -a; . "/opt/gen/${PHP_VERSION}.env"; set +a; fi; \
+    cd /opt/vendor; \
+    tar xzf "php-${PHP_VERSION}.tar.gz"; cd "php-${PHP_VERSION}"; \
+    ./configure --prefix="$PHP_DIR" \
+      --with-config-file-path="$PHP_DIR/etc" \
+      --with-config-file-scan-dir="$PHP_DIR/etc/conf.d" \
+      --with-libdir="lib/$multiarch" \
+      $(cat "/opt/gen/${PHP_VERSION}.flags") \
+      || { echo "=== configure failed; config.log tail ==="; tail -n 200 config.log; exit 1; }; \
+    make -j"$(nproc)"; \
+    make install; \
+    mkdir -p "$PHP_DIR/etc/conf.d"
+
+RUN set -eux; \
+    export PATH="$PHP_DIR/bin:$PATH"; \
+    if [ -f "/opt/gen/${PHP_VERSION}.env" ]; then set -a; . "/opt/gen/${PHP_VERSION}.env"; set +a; fi; \
+    extdir="$(php-config --extension-dir)"; mkdir -p "$extdir"; \
+    while read -r name tgz mod; do \
+      [ -n "$name" ] || continue; \
+      cd /opt/vendor; rm -rf "ext-$name"; mkdir "ext-$name"; \
+      tar xzf "$tgz" -C "ext-$name" --strip-components=1; \
+      cd "ext-$name"; \
+      phpize; \
+      ./configure --with-php-config="$PHP_DIR/bin/php-config"; \
+      make -j"$(nproc)"; make install; \
+      printf 'extension=%s.so\n' "$mod" > "$PHP_DIR/etc/conf.d/$mod.ini"; \
+    done < "/opt/gen/${PHP_VERSION}.ext"; \
+    php -m
+
+RUN set -eux; \
+    sh /opt/scripts/pack-artifact.sh \
+      "$PHP_DIR" \
+      "php-${PHP_VERSION}-linux-${ARTIFACT_ARCH}.tar.gz" \
+      "/opt/gen/${PHP_VERSION}.ext"

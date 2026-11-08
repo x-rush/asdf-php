@@ -39,10 +39,20 @@ skip() { printf '  [SKIP] %s\n' "$*"; }
 echo "== asdf-php v2 / L0 static contract =="
 
 if bash -n "$root/bin/install" "$root/bin/list-all" "$root/scripts/vendor.sh" \
-        "$root/scripts/relocate.sh" "$root/scripts/smoke-artifact.sh" 2>"$tmp/n.err"; then
-  pass "T1 bash -n on all 5 shell scripts"
+        "$root/scripts/relocate.sh" "$root/scripts/smoke-artifact.sh" \
+        "$root/scripts/pack-artifact.sh" "$root/scripts/pin-base.sh" \
+        "$root/scripts/image-platforms.sh" \
+        "$root/scripts/l2.sh" "$root/build/macos.sh" 2>"$tmp/n.err"; then
+  pass "T1 bash -n on all 10 shell scripts"
 else
   fail "T1 syntax: $(cat "$tmp/n.err")"
+fi
+
+if python3 -m py_compile "$root/scripts/gen-build-inputs.py" "$root/scripts/vendor-ledger.py" \
+        "$root/scripts/fill-placeholders.py" 2>"$tmp/py.err"; then
+  pass "T1b build helper scripts compile"
+else
+  fail "T1b python syntax: $(cat "$tmp/py.err")"
 fi
 
 if python3 - "$root" <<'PY' 2>"$tmp/json.err"
@@ -85,12 +95,14 @@ fi
 # vendored OpenSSL 1.0.2u lacks a version script, so linking -lpq alongside
 # --with-openssl=<prefix> fails at make time with 40+ undefined references.
 # libcurl was pulled off the same cliff by switching to the GnuTLS backend.
+# Applies to every G1 build (the archival 5.4 file and the multi-arch template).
 # Comment lines are stripped first so the rationale can be documented inline.
-if sed 's/^[[:space:]]*#.*$//' "$root/build/Dockerfile.5.4" "$root/versions/5.4.45.toml" \
+if sed 's/^[[:space:]]*#.*$//' "$root/build/Dockerfile.5.4" "$root/build/Dockerfile.g1" \
+        "$root/versions/5.4.45.toml" "$root/versions/5.6.40.toml" \
      | grep -qE -- '--with-(pdo-)?pgsql|libpq-dev'; then
   fail "T3b legacy build inputs re-introduced libpq/pgsql (breaks SSL symbol isolation)"
 else
-  pass "T3b SSL isolation: no libpq/pgsql in frozen build inputs"
+  pass "T3b SSL isolation: no libpq/pgsql in any G1 build input"
 fi
 
 # T3c: support scope must stay frozen and internally consistent (frozen 2026-11-08).
@@ -149,6 +161,173 @@ elif [ "$gate" != "$rdpub" ]; then
 else
   pass "T3e platform gate == manifest.published == README table ($gate)"
 fi
+
+# T3f/T3g/T3i: 全矩阵脚手架的结构一致性。版本一多，"某个版本没有定义文件"
+# 或"模板名写错了"这类问题不会自己冒出来，只会在 CI 里浪费一次构建才暴露。
+if python3 - "$root" <<'PY' 2>"$tmp/matrix2.err"
+import json, pathlib, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+m = json.load(open(root / "manifest.json"))
+scope = m["support_matrix"]["scope"]["legacy_frozen"]
+gens = {g["id"] for g in m["support_matrix"]["generations"]}
+
+for ver in scope:
+    p = root / "versions" / f"{ver}.toml"
+    assert p.is_file(), f"missing definition {p.name}"
+    d = tomllib.load(p.open("rb"))
+    assert d["version"] == ver, f"{p.name}: version field mismatch"
+    gen = d.get("generation")
+    assert gen in gens, f"{p.name}: generation {gen!r} not declared in manifest"
+    tpl = root / d["dockerfile"]
+    assert tpl.is_file(), f"{p.name}: dockerfile {d['dockerfile']} missing"
+    # 模板文件名必须对应代际，防止 g2 的定义指向 g1 的模板这类串台。
+    name = tpl.name
+    if gen == "g1":
+        assert name in ("Dockerfile.5.4", "Dockerfile.g1"), f"{p.name}: {name} is not a G1 template"
+    else:
+        assert name == f"Dockerfile.{gen}", f"{p.name}: {name} != Dockerfile.{gen}"
+    # G2/G3 用系统 OpenSSL：出现自建 toolchain 说明模板抄错了代。
+    if gen in ("g2", "g3"):
+        assert "openssl" not in d.get("toolchain", {}), f"{p.name}: {gen} must not vendor OpenSSL"
+        assert not any("/opt/toolchain" in f for f in d["configure"]["flags"]), \
+            f"{p.name}: {gen} flag points at the vendored toolchain"
+
+# 每个版本在 toml 的 [artifact].targets 里声明自己要产出哪些平台，
+# manifest.artifacts 必须与它完全一致（双向）。多一条就指到不存在的下载地址，
+# 少一条就让已产出的平台无人知晓 —— 两种都会让 bin/install 说错话。
+known = {"linux-x86_64", "linux-arm64", "darwin-x86_64", "darwin-arm64"}
+by_ver = {v["version"]: v for v in m["versions"]}
+for ver in scope:
+    d = tomllib.load((root / "versions" / f"{ver}.toml").open("rb"))
+    targets = set(d.get("artifact", {}).get("targets", []))
+    assert targets, f"{ver}: [artifact].targets is missing"
+    assert targets <= known, f"{ver}: unknown platform(s) {targets - known}"
+    assert {"linux-x86_64", "linux-arm64"} <= targets, f"{ver}: must target both Linux arches"
+    arts = by_ver[ver]["artifacts"]
+    assert set(arts) == targets, f"{ver}: manifest artifacts {sorted(arts)} != toml targets {sorted(targets)}"
+    for plat, a in arts.items():
+        assert a["name"] == f"php-{ver}-{plat}.tar.gz", f"{ver}/{plat}: name {a['name']} != canonical"
+print("ok")
+PY
+then
+  pass "T3f/T3g/T3i matrix: 7 definitions, correct templates, no cross-generation drift"
+else
+  fail "T3f/T3g/T3i matrix: $(tail -2 "$tmp/matrix2.err")"
+fi
+
+# T3h: flag/version 匹配是行为测试，不是文本检查 —— 真的把 7 个版本各展开一遍。
+if for v in 5.4.45 5.6.40 7.2.34 7.3.33 7.4.33 8.0.30 8.1.34; do
+     python3 "$root/scripts/gen-build-inputs.py" "$v" >/dev/null || exit 1
+   done 2>"$tmp/gen.err"; then
+  pass "T3h build inputs expand for all 7 versions (no wrong-version configure flags)"
+else
+  fail "T3h build input expansion: $(tail -2 "$tmp/gen.err")"
+fi
+
+# T3j: planned 平台清单也必须是三处一致。少写一条，ARM/Mac 用户就会收到
+# "unsupported" 而不是 "planned" —— 那是把"还没做"误报成"不做"。
+gate_p="$(sed -n 's/^PLANNED="\(.*\)"$/\1/p' "$root/bin/install" | head -1)"
+mplan="$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1],encoding="utf-8"))["platforms"]["planned"]))' "$root/manifest.json" 2>/dev/null || echo '__ERR__')"
+if [ "$gate_p" = "$mplan" ]; then
+  pass "T3j planned platforms match manifest ($gate_p)"
+else
+  fail "T3j planned drift: bin/install [$gate_p] != manifest [$mplan]"
+fi
+
+# T3k: SOURCES.json 必须是合并，不是重算。CI 每次只为一个版本拉源码，
+# 若记账按目录重写，就会删掉其它版本的记录，「拉完 git diff 必须为空」这条
+# 漂移门禁将永久失败，最终只剩被人关掉一个结局。
+mkdir -p "$tmp/ledger"
+printf '%s\n' '{"ghost-9.9.9.tar.gz": {"sha256": "'"$(printf '%064d' 1)"'"}}' > "$tmp/ledger/SOURCES.json"
+: > "$tmp/ledger/real-1.0.tgz"
+if python3 "$root/scripts/vendor-ledger.py" "$tmp/ledger" >/dev/null 2>&1 \
+   && python3 - "$tmp/ledger/SOURCES.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert "ghost-9.9.9.tar.gz" in d, "existing ledger entry was dropped"
+assert "real-1.0.tgz" in d, "newly fetched file was not recorded"
+print("ok")
+PY
+then
+  pass "T3k vendor ledger merges (never drops entries for versions not fetched this run)"
+else
+  fail "T3k vendor ledger rewrote instead of merging"
+fi
+
+# T3l: 回填门禁必须按版本作用域。CI 与 l2 每次只为一个版本拉源码，门禁若扫描全部
+# toml，只要还有一个版本没轮到冻结，单版本构建就会死在第一步 —— 2026-11-08 L2
+# 实测正是如此：7.4.33 的源码已下载校验完，却被 5.6.40 的占位符堵住，编译一步没跑。
+mkdir -p "$tmp/fill/versions" "$tmp/fill/vendor"
+printf '%s\n' '{"php-a.tar.gz": {"sha256": "aaa111"}}' > "$tmp/fill/vendor/SOURCES.json"
+printf 'version = "1.0.0"\nsha256 = "FILL:php-a.tar.gz"\n' > "$tmp/fill/versions/1.0.0.toml"
+printf 'version = "2.0.0"\nsha256 = "FILL:php-b.tar.gz"\n' > "$tmp/fill/versions/2.0.0.toml"
+if python3 "$root/scripts/fill-placeholders.py" "$tmp/fill" "$tmp/fill/vendor" --scope 1.0.0 \
+        >"$tmp/fill/out" 2>"$tmp/fill/err" \
+   && grep -q 'aaa111' "$tmp/fill/versions/1.0.0.toml" \
+   && grep -q 'FILL:php-b.tar.gz' "$tmp/fill/versions/2.0.0.toml"; then
+  pass "T3l fill gate is scope-aware (other versions' placeholders do not block this one)"
+else
+  fail "T3l scoped fill: $(tail -2 "$tmp/fill/err" 2>/dev/null)"
+fi
+
+# 反向：本轮版本自己的占位没解，必须硬失败；且报错里的文件名不能被正则吃掉尾引号
+# （旧写法 `FILL:\S+` 报成 `FILL:php-b.tar.gz"`，看着像 toml 写坏了）。
+if python3 "$root/scripts/fill-placeholders.py" "$tmp/fill" "$tmp/fill/vendor" --scope 2.0.0 \
+        >/dev/null 2>"$tmp/fill/err2"; then
+  fail "T3l2 in-scope unresolved placeholder must be a hard error"
+elif grep -q 'FILL:php-b.tar.gz"' "$tmp/fill/err2"; then
+  fail "T3l2 placeholder report swallowed the closing quote"
+else
+  pass "T3l2 in-scope placeholder fails loudly, filename reported without stray quote"
+fi
+
+# T3m: buildx 把 arm64 平台报成 `linux/arm64/v8`。按字面匹配 `linux/arm64` 会让
+# pin-base / l2 把一个本来合格的 base 判成缺 arm64 —— 天天误报的警告最后只会被无视，
+# 真正缺 arm64 时反而没人看。用真实 buildx 输出格式复现，验归一化与判定。
+# 注入方式用导出的 bash 函数（同 tar 的处理）：MinGW 的临时目录是 C:/... 形式，
+# 塞进 PATH 会被冒号截断。
+docker() {
+  case "$*" in
+    *"buildx version"*) printf 'github.com/docker/buildx v0.0.0-stub\n'; return 0 ;;
+    *imagetools*inspect*)
+      cat <<'OUT'
+Name:      debian:bullseye-slim
+MediaType: application/vnd.docker.distribution.manifest.list.v2+json
+Digest:    sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+Manifests:
+  Platform:     linux/386
+  Platform:     linux/amd64
+  Platform:     linux/arm/v7
+  Platform:     linux/arm64/v8
+  Platform:     unknown/unknown
+OUT
+      return 0 ;;
+  esac
+  return 0
+}
+export -f docker
+plats="$(bash "$root/scripts/image-platforms.sh" debian:bullseye-slim 2>/dev/null || true)"
+if [ "$plats" = "linux/386 linux/amd64 linux/arm/v7 linux/arm64" ]; then
+  pass "T3m arm64/v8 -> linux/arm64, attestation (unknown/unknown) dropped"
+else
+  fail "T3m platform normalization: got [$plats]"
+fi
+
+pinout="$(bash "$root/scripts/pin-base.sh" debian:bullseye-slim 2>&1 || true)"
+if printf '%s\n' "$pinout" | grep -q 'amd64 + arm64 both present' \
+   && ! printf '%s\n' "$pinout" | grep -q 'WARNING'; then
+  pass "T3m pin-base sees arm64 in a real-format index (no false WARNING)"
+else
+  fail "T3m pin-base false positive: $(printf '%s\n' "$pinout" | tail -3)"
+fi
+
+if ! grep -q "awk '/Platform:/" "$root/scripts/l2.sh" "$root/scripts/pin-base.sh" 2>/dev/null; then
+  pass "T3m platform detection has one implementation (scripts/image-platforms.sh)"
+else
+  fail "T3m platform detection duplicated in l2.sh / pin-base.sh"
+fi
+unset -f docker
 
 echo "== asdf-php v2 / L1 artifact-repo contract =="
 # The fake release server serves the artifact name bin/install would request on
@@ -305,6 +484,34 @@ FAKE_DARWIN
     fail "T8b refusal must not create the install path"
   else
     pass "T8b refusal left no partial install directory"
+  fi
+
+  # T8c: 已规划但还没制品的平台要给不同的说法。「还没做」被误报成「不做」，
+  # 是开源项目最常见的信任损耗之一，所以这条单独守。
+  if ( cd "$tmp" && PATH="$fbd:$PATH" \
+        ASDF_INSTALL_VERSION="$ver" ASDF_INSTALL_PATH="i_plan" \
+        ASDF_PHP_RELEASE_BASE="http://127.0.0.1:$port" \
+          bash "$root/bin/install" ) >"$tmp/plan.out" 2>&1; then
+    fail "T8c darwin-arm64 should have been refused but the install succeeded"
+  elif grep -q 'planned but not published yet' "$tmp/plan.out"; then
+    pass "T8c planned platform -> says 'planned', not 'unsupported'"
+  else
+    fail "T8c missing planned hint: $(tail -2 "$tmp/plan.out")"
+  fi
+
+  # T8d: Rosetta 回退。把 darwin-x86_64 伪装成已发布，arm64 机器应走回退分支；
+  # 本机不是 macOS，没有 /usr/bin/arch，所以必须停在「请安装 Rosetta」而不是
+  # 直接去下 x86_64 制品。正向回退路径只能在 macOS runner 上验（见 CI）。
+  if ( cd "$tmp" && PATH="$fbd:$PATH" \
+        ASDF_PHP_SUPPORTED="darwin-x86_64" ASDF_PHP_PLANNED="" \
+        ASDF_INSTALL_VERSION="$ver" ASDF_INSTALL_PATH="i_rosetta" \
+        ASDF_PHP_RELEASE_BASE="http://127.0.0.1:$port" \
+          bash "$root/bin/install" ) >"$tmp/rosetta.out" 2>&1; then
+    fail "T8d Rosetta fallback must not silently install x86_64 without Rosetta"
+  elif grep -qi 'rosetta' "$tmp/rosetta.out"; then
+    pass "T8d darwin-arm64 -> x86_64 fallback, asks for Rosetta when missing"
+  else
+    fail "T8d wrong Rosetta path: $(tail -2 "$tmp/rosetta.out")"
   fi
 fi
 

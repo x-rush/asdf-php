@@ -1,0 +1,92 @@
+# asdf-php v2 / G2 模板：PHP 7.2 / 7.3 / 7.4 / 8.0 on Debian 11 bullseye
+#
+# 为什么单独一代，而不是复用 G1：
+#   * PHP 7.0 起 ext/mysql 被移除，--with-mysql 已不存在；照抄 5.4 的 flags
+#     不会报错，只会让 mysql 扩展静默消失（T3h 守这条）
+#   * PHP 7.2 起 zip 改用 libzip：flag 从 5.x 的 --enable-zip 变成 --with-zip
+#   * PHP 7.4 起 mbstring 不再自带 oniguruma，必须 apt libonig-dev，否则
+#     --enable-mbstring 编出来是空壳
+#   * OpenSSL 3.0 官方不支持 8.1 之前的分支（bugs.php.net #81540，明确不 backport），
+#     所以这一代用 bullseye 的系统 OpenSSL 1.1.1，绝不用 bookworm 的 3.0
+#
+# 与 G1 最大的不同：这里**不需要** vendor OpenSSL，也不需要 G1 那套符号隔离。
+# G1 炸的原因是 jessie 系统库与自建库共用 libssl.so.1.0.0 这个 soname；这里 PHP
+# 和系统库用的是同一份 libssl.so.1.1，冲突前提根本不存在，curl 也不必换 GnuTLS。
+#
+# 参数全部来自 versions/<ver>.toml（l2.sh 生成 build/.gen/，单一真相源）：
+#   <ver>.flags  每行一个 configure flag
+#   <ver>.env    可选，形如 CFLAGS="-O2 -fcommon"（7.2/7.3 在 GCC 10 上需要 -fcommon）
+#   <ver>.ext    每行 "name tarball module"
+ARG BASE_IMAGE=debian:bullseye-slim@sha256:e5b6442dd2e9684cf5e87d8338b5968f3b348636fc0be6d7850a381e3731a2bd
+FROM ${BASE_IMAGE}
+
+ARG PHP_VERSION=7.4.33
+ARG ARTIFACT_ARCH=x86_64
+ARG PHP_DIR=/opt/php/${PHP_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# bullseye 的 LTS 在 2026-08-31 结束，之后会被挪进 archive.debian.org。
+# 与其赌「现在还在不在」，不如先走活源、失败再切归档：两条路径的包内容一致
+# （同一 suite 同一版本不会被改写），base digest 又把 glibc 钉死了，
+# 所以切换只影响镜像来源，不影响产物。日志里会打印实际走了哪条路。
+RUN set -eux; \
+    PKGS="build-essential autoconf re2c pkg-config file dpkg-dev bison \
+      libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
+      libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
+      libsqlite3-dev libargon2-dev"; \
+    if apt-get update && apt-get install -y --no-install-recommends $PKGS; then \
+      echo "apt: live bullseye mirror"; \
+    else \
+      echo "apt: live mirror failed, switching to archive.debian.org"; \
+      printf '%s\n' \
+        'deb http://archive.debian.org/debian bullseye main' \
+        'deb http://archive.debian.org/debian-security bullseye-security main' \
+        > /etc/apt/sources.list; \
+      printf '%s\n' 'Acquire::Check-Valid-Until "false";' \
+        > /etc/apt/apt.conf.d/99-archive; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends --allow-unauthenticated $PKGS; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY vendor/ /opt/vendor/
+COPY build/.gen/ /opt/gen/
+COPY scripts/ /opt/scripts/
+
+RUN set -eux; \
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
+    if [ -f "/opt/gen/${PHP_VERSION}.env" ]; then set -a; . "/opt/gen/${PHP_VERSION}.env"; set +a; fi; \
+    cd /opt/vendor; \
+    tar xzf "php-${PHP_VERSION}.tar.gz"; cd "php-${PHP_VERSION}"; \
+    ./configure --prefix="$PHP_DIR" \
+      --with-config-file-path="$PHP_DIR/etc" \
+      --with-config-file-scan-dir="$PHP_DIR/etc/conf.d" \
+      --with-libdir="lib/$multiarch" \
+      $(cat "/opt/gen/${PHP_VERSION}.flags") \
+      || { echo "=== configure failed; config.log tail ==="; tail -n 200 config.log; exit 1; }; \
+    make -j"$(nproc)"; \
+    make install; \
+    mkdir -p "$PHP_DIR/etc/conf.d"
+
+RUN set -eux; \
+    export PATH="$PHP_DIR/bin:$PATH"; \
+    if [ -f "/opt/gen/${PHP_VERSION}.env" ]; then set -a; . "/opt/gen/${PHP_VERSION}.env"; set +a; fi; \
+    extdir="$(php-config --extension-dir)"; mkdir -p "$extdir"; \
+    while read -r name tgz mod; do \
+      [ -n "$name" ] || continue; \
+      cd /opt/vendor; rm -rf "ext-$name"; mkdir "ext-$name"; \
+      tar xzf "$tgz" -C "ext-$name" --strip-components=1; \
+      cd "ext-$name"; \
+      phpize; \
+      ./configure --with-php-config="$PHP_DIR/bin/php-config"; \
+      make -j"$(nproc)"; make install; \
+      printf 'extension=%s.so\n' "$mod" > "$PHP_DIR/etc/conf.d/$mod.ini"; \
+    done < "/opt/gen/${PHP_VERSION}.ext"; \
+    php -m
+
+RUN set -eux; \
+    sh /opt/scripts/pack-artifact.sh \
+      "$PHP_DIR" \
+      "php-${PHP_VERSION}-linux-${ARTIFACT_ARCH}.tar.gz" \
+      "/opt/gen/${PHP_VERSION}.ext"

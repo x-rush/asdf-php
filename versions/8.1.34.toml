@@ -1,0 +1,41 @@
+# asdf-php v2 / frozen build definition — G3
+version = "8.1.34"
+channel = "legacy"
+generation = "g3"
+dockerfile = "build/Dockerfile.g3"
+safety = { patched = false, network_policy = "offline-only" }
+
+[source]
+url    = "https://www.php.net/distributions/php-8.1.34.tar.gz"
+path   = "vendor/php-8.1.34.tar.gz"
+sha256 = "FILL:php-8.1.34.tar.gz"
+
+[base]
+# 8.1 是第一个支持 OpenSSL 3.0 的分支，所以这一代跨到 bookworm（系统 3.0）。
+# bookworm 常规支持到 2028-06，现在是活源，不需要 archive 回退。
+image   = "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
+suite   = "bookworm"
+openssl = "system 3.0 (libssl-dev)"
+
+[build]
+cflags = "-O2"
+
+[configure]
+# 8.1 起 GD 开关改名：--with-gd 变成未识别选项（只警告、不报错，结果是 gd 静默
+# 缺席），必须写 --enable-gd。sodium 8.1 起默认启用，需要 libsodium-dev。
+flags = [
+  "--with-openssl",
+  "--with-zip", "--with-curl",
+  "--enable-gd", "--with-freetype", "--with-jpeg",
+  "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+]
+
+[extensions]
+redis  = "5.3.7"
+swoole = "4.8.13"
+
+[artifact]
+# 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
+# T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
+targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64", "darwin-arm64"]
+name = "php-8.1.34-{os}-{arch}.tar.gz"

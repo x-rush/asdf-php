@@ -1,0 +1,42 @@
+# asdf-php v2 / frozen build definition — G2
+version = "8.0.30"
+channel = "legacy"
+generation = "g2"
+dockerfile = "build/Dockerfile.g2"
+safety = { patched = false, network_policy = "offline-only" }
+
+[source]
+url    = "https://www.php.net/distributions/php-8.0.30.tar.gz"
+path   = "vendor/php-8.0.30.tar.gz"
+sha256 = "FILL:php-8.0.30.tar.gz"
+
+[base]
+# 8.0 是最后一代「不能配 OpenSSL 3.0」的分支，因此留在 bullseye（1.1.1）；
+# 8.1 才跨到 bookworm（3.0）。这条分界是 G2/G3 存在的唯一理由。
+image   = "debian:bullseye-slim@sha256:e5b6442dd2e9684cf5e87d8338b5968f3b348636fc0be6d7850a381e3731a2bd"
+suite   = "bullseye"
+openssl = "system 1.1.1 (libssl-dev)"
+
+[build]
+cflags = "-O2"
+
+[configure]
+# 8.0 的 gd 仍是 --with-gd（8.1 才改成 --enable-gd），这里保持 7.4 的写法。
+flags = [
+  "--with-openssl",
+  "--with-zip", "--with-curl",
+  "--with-gd", "--with-freetype", "--with-jpeg",
+  "--enable-mbstring", "--with-mysqli", "--with-pdo-mysql",
+]
+
+[extensions]
+# swoole 5.x 要求 PHP >= 8.0，但 4.8.13 同样支持 8.0/8.1。
+# 统一 4.8.13 可以把 7.2-8.1 五个版本的扩展源码收敛成一份，少五个 vendor 文件。
+redis  = "5.3.7"
+swoole = "4.8.13"
+
+[artifact]
+# 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
+# T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
+targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64", "darwin-arm64"]
+name = "php-8.0.30-{os}-{arch}.tar.gz"
