@@ -1,0 +1,21 @@
+# bin/install is the plugin entrypoint and runs under bash. If Git checks it
+# out with CRLF (the default on Windows), the shebang becomes "#!/usr/bin/env
+# bash\r" and exec fails with "bad interpreter". Every text file here is a
+# script, config or doc consumed on Linux/macOS, so pin LF in the worktree.
+* text=auto eol=lf
+
+*.sh    text eol=lf
+bin/*   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+LICENSE text eol=lf
+NOTICE  text eol=lf
+
+# Pinned sources are redistributed byte-for-byte; never normalise them.
+*.tar.gz binary
+*.tgz    binary
+*.gpg    binary
+*.asc    binary
