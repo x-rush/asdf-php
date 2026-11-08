@@ -633,6 +633,63 @@ else
   fail "T3s override path crashed: $(tail -3 "$tmp/t3s/c.out")"
 fi
 
+# T3u: gd 的 freetype 支持不能用运气换。PHP 7.2/7.3 的 ext/gd 只认
+# --with-freetype-dir，其 config.m4 用 AC_PATH_PROG 找 freetype-config，找不到就
+# AC_MSG_ERROR 中止 configure；而 bullseye 的 libfreetype6-dev 已经不装这个脚本
+# （freetype 2.10 起上游转交 pkg-config）。2026-11-08 的 7.2.34 L2 就死在
+# `#10 12.20 configure: error: freetype-config not found.`。
+# 三条断言各自守一个断点：①shim 是合法 POSIX sh；②g2 真的把它装进镜像；
+# ③smoke 有函数级门禁 —— 少了第三条，shim 哪天失效也没人知道，只会得到一份
+# 「图像函数都在、唯独画不上字」的静默降级制品。
+if [ -f "$root/build/freetype-config-shim.sh" ] \
+   && sh -n "$root/build/freetype-config-shim.sh" 2>"$tmp/t3u.err"; then
+  pass "T3u build/freetype-config-shim.sh exists and parses as POSIX sh"
+else
+  fail "T3u freetype-config shim: $(cat "$tmp/t3u.err" 2>/dev/null)"
+fi
+
+if grep -q 'build/freetype-config-shim.sh /tmp/freetype-config' "$root/build/Dockerfile.g2" \
+   && grep -q 'install -m 0755 /tmp/freetype-config /usr/local/bin/freetype-config' \
+        "$root/build/Dockerfile.g2"; then
+  pass "T3u Dockerfile.g2 installs the freetype-config shim when the distro dropped it"
+else
+  fail "T3u Dockerfile.g2 no longer installs the freetype-config shim (7.2/7.3 configure will fail)"
+fi
+
+if grep -q 'imagettftext' "$root/scripts/smoke-artifact.sh" \
+   && grep -q 'with-freetype' "$root/scripts/smoke-artifact.sh"; then
+  pass "T3u smoke gates gd freetype with imagettftext for versions that declare it"
+else
+  fail "T3u smoke lost the gd-freetype gate — a silent freetype regression would ship"
+fi
+
+# 行为断言：只看脚本里有没有 "--cflags" 这几个字不算验证。用假 pkg-config 复现
+# bullseye 的输出，确认 shim 真的把参数翻译成 freetype2.pc 的值 —— 如果它把参数
+# 原样透传，PHP 拿到的 FREETYPE_CFLAGS 就是一句 "unsupported option"，链接时才发现。
+mkdir -p "$tmp/t3u/bin"
+cat > "$tmp/t3u/bin/pkg-config" <<'SH'
+#!/bin/sh
+case "$*" in
+  "--cflags freetype2")            echo "-I/usr/include/freetype2" ;;
+  "--libs freetype2")              echo "-lfreetype" ;;
+  "--modversion freetype2")        echo "2.10.4" ;;
+  "--variable=prefix freetype2")   echo "/usr" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$tmp/t3u/bin/pkg-config"
+t3u_path="$tmp/t3u/bin"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) t3u_path="$(cygpath -u "$tmp/t3u/bin")" ;;
+esac
+t3u_cflags="$(PATH="$t3u_path:$PATH" sh "$root/build/freetype-config-shim.sh" --cflags 2>&1 || true)"
+t3u_libs="$(PATH="$t3u_path:$PATH" sh "$root/build/freetype-config-shim.sh" --libs 2>&1 || true)"
+if [ "$t3u_cflags" = "-I/usr/include/freetype2" ] && [ "$t3u_libs" = "-lfreetype" ]; then
+  pass "T3u freetype-config shim translates --cflags/--libs into freetype2.pc values"
+else
+  fail "T3u shim passthrough broken: cflags=[$t3u_cflags] libs=[$t3u_libs]"
+fi
+
 echo "== asdf-php v2 / L1 artifact-repo contract =="
 # The fake release server serves the artifact name bin/install would request on
 # a SUPPORTED host. It is pinned to linux-x86_64 rather than derived from the

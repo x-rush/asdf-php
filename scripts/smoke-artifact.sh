@@ -210,6 +210,21 @@ case "$probe" in
       exit 1 ;;
 esac
 
+# 4c) freetype 声明与产物必须对得上。7.2/7.3 的 gd 只认 --with-freetype-dir，
+# 这条路依赖外部 freetype-config（bullseye 已不再提供，由 build/freetype-config-shim.sh
+# 补上）。声明了 freetype、产物里却没有 imagettftext，说明 gd 是「静默降级」编出来的：
+# 图像函数全在，唯独画不上字。和 4b 同理，只有函数级探针抓得住。
+# 判据跟着定义走，不写死版本号：toml 里没声明 freetype 的版本（5.4/5.6）不参与。
+if [ -n "$expected" ] && [ -f "$defn" ] && grep -qE '^[[:space:]]*"--with-freetype' "$defn"; then
+  ft="$("$d/bin/php" -r 'echo function_exists("imagettftext") ? "ok" : "no";' 2>&1 | tail -1)"
+  case "$ft" in
+    ok) echo "  [PASS] gd freetype: imagettftext available (declared in versions/$expected.toml)" ;;
+    *)  echo "  [FAIL] freetype declared in versions/$expected.toml but imagettftext is missing: ${ft:-<no output>}"
+        echo "         gd was built without freetype — check build/freetype-config-shim.sh is in the image"
+        exit 1 ;;
+  esac
+fi
+
 # OPcache 编进制品但不默认启用（zend_extension 要显式打开，CLI 下默认也无收益）。
 # 这里验的是「装得进、能加载」，不改变解包即用的默认行为。5.4 没有 opcache。
 case "$expected" in

@@ -37,11 +37,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG APT_MIRROR_MAIN=
 ARG APT_MIRROR_SEC=
 COPY build/apt-install.sh /tmp/apt-install.sh
+COPY build/freetype-config-shim.sh /tmp/freetype-config
 RUN sh /tmp/apt-install.sh bullseye \
       build-essential autoconf re2c pkg-config file dpkg-dev bison \
       libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
       zlib1g-dev libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
       libsqlite3-dev libargon2-dev
+
+# PHP 7.2/7.3 的 ext/gd 用 --with-freetype-dir，config.m4 硬依赖 freetype-config，
+# 找不到就 AC_MSG_ERROR；而 bullseye 的 libfreetype6-dev 已经不装这个脚本
+# （freetype 2.10 起上游移交给 pkg-config）。这一层只在缺失时装一个翻译层，
+# 把 --cflags/--libs 转给 freetype2.pc —— 见 build/freetype-config-shim.sh 文件头。
+# 7.4+ 的 gd 直接用 pkg-config，装上也互不干扰，所以不按版本分叉。
+RUN if ! command -v freetype-config >/dev/null 2>&1; then \
+      install -m 0755 /tmp/freetype-config /usr/local/bin/freetype-config; \
+    fi; \
+    freetype-config --version >/dev/null
 
 COPY vendor/ /opt/vendor/
 COPY build/.gen/ /opt/gen/
