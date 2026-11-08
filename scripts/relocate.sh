@@ -44,6 +44,14 @@ mkdir -p etc/conf.d libexec
 } > etc/conf.d/00-relocatable.ini
 
 # --- 2) CLI wrapper ---------------------------------------------------------
+# 动态库搜索变量按平台选：Linux 是 LD_LIBRARY_PATH，macOS 是 DYLD_LIBRARY_PATH。
+# macOS 上真正起作用的是 pack-artifact.sh 写进 Mach-O 的 @loader_path rpath，
+# 这里只是兜底（rpath 没覆盖到的间接依赖）。SIP 只会剥受保护进程的 DYLD_*，
+# 我们自己的 prefix 不在保护范围内。
+case "$(uname -s)" in
+  Darwin) libvar=DYLD_LIBRARY_PATH ;;
+  *)      libvar=LD_LIBRARY_PATH ;;
+esac
 for n in php php-cgi; do
   [ -f "bin/$n" ] || continue
   [ -L "bin/$n" ] && continue
@@ -51,8 +59,8 @@ for n in php php-cgi; do
   cat > "bin/$n" <<'WRAPPER'
 #!/bin/sh
 here="$(cd "$(dirname "$0")/.." && pwd)"
-LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export LD_LIBRARY_PATH
+__LIBVAR__="$here/lib${__LIBVAR__:+:$__LIBVAR__}"
+export __LIBVAR__
 PHPRC="${PHPRC-$here/etc}"
 export PHPRC
 PHP_INI_SCAN_DIR="${PHP_INI_SCAN_DIR-$here/etc/conf.d}"
@@ -61,7 +69,7 @@ ASDF_PHP_PREFIX="${ASDF_PHP_PREFIX-$here}"
 export ASDF_PHP_PREFIX
 exec "$here/libexec/__NAME__.bin" "$@"
 WRAPPER
-  sed -i "s/__NAME__/$n/g" "bin/$n"
+  sed -i.bak "s/__NAME__/$n/g; s/__LIBVAR__/$libvar/g" "bin/$n" && rm -f "bin/$n.bak"
   chmod 755 "bin/$n"
 done
 

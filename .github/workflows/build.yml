@@ -4,10 +4,11 @@ name: build-php-artifacts
 #   legacy  = 封闭集合，默认永不重跑；产物存 Releases 永久保留，构建定义只作历史档案
 #   current = 新 PHP major，push / 每周一自动跑；V1 先留发现逻辑，不产出未经验证的流水线
 #
-# 支持范围（老大 2026-11-08 定）：5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1 及以上。
+# 支持范围：5.4 / 5.6 / 7.2 / 7.3 / 7.4 / 8.0 / 8.1 及以上。
 # 前 7 个分支全已 EOL，按末版冻结；8.2+ 走 current 通道滚动。
-# 按 OpenSSL ABI 代际只需 3 套 Dockerfile 模板（G1 5.x / G2 7.2-8.0 / G3 8.1+），
-# 详见 manifest.json -> support_matrix。每铺通一个版本才加一行 matrix。
+# 按 OpenSSL ABI 代际只需 3 套 Dockerfile 模板（g1 5.x / g2 7.2-8.0 / g3 8.1+），
+# 详见 manifest.json -> support_matrix。模板由 versions/<ver>.toml 的 dockerfile 字段决定，
+# 不在这里再写一遍映射 —— 那是第四个会漂移的地方。
 on:
   push:
     paths:
@@ -44,6 +45,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Refuse invented checksums
         run: |
           python3 - <<'PY'
@@ -61,7 +65,7 @@ jobs:
       - name: Manifest lists only published versions in versions.txt
         run: |
           python3 - <<'PY'
-          import json, re
+          import json
           m = json.load(open('manifest.json'))
           published = {v['version'] for v in m['versions']
                        if any(a.get('status') == 'published' for a in v['artifacts'].values())}
@@ -74,69 +78,121 @@ jobs:
               raise SystemExit(f"versions.txt {sorted(listed)} != published {sorted(published)}")
           print('versions.txt matches published artifacts:', sorted(published))
           PY
+      - name: Every frozen version has a definition and a template
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys, tomllib
+          m = json.load(open('manifest.json'))
+          scope = m['support_matrix']['scope']['legacy_frozen']
+          for ver in scope:
+              p = pathlib.Path('versions') / f'{ver}.toml'
+              if not p.is_file():
+                  sys.exit(f'missing definition: {p}')
+              d = tomllib.load(p.open('rb'))
+              if d.get('version') != ver:
+                  sys.exit(f'{p}: version field does not match filename')
+              tpl = d.get('dockerfile')
+              if not tpl or not pathlib.Path(tpl).is_file():
+                  sys.exit(f'{p}: dockerfile {tpl!r} does not exist')
+              if 'FILL:' in p.read_text():
+                  # 未冻结的定义只允许存在于从未构建过的版本上。
+                  arts = next(v for v in m['versions'] if v['version'] == ver)['artifacts']
+                  if any(a.get('status') == 'published' for a in arts.values()):
+                      sys.exit(f'{p}: published version still has unfrozen inputs (FILL:)')
+          print('definitions + templates consistent for', len(scope), 'versions')
+          PY
+      - name: Configure flags are valid for their PHP version
+        # 每条 flag 的雷区都在 gen-build-inputs.py 里：--with-mysql 在 7.0 被移除、
+        # --enable-zip 在 7.2 换成 --with-zip、8.1 起 --with-gd 变成 --enable-gd……
+        # 写错不会报错，只会编出一个缺功能的制品，所以在 validate 阶段就跑到。
+        run: |
+          for v in 5.4.45 5.6.40 7.2.34 7.3.33 7.4.33 8.0.30 8.1.34; do
+            python3 scripts/gen-build-inputs.py "$v"
+          done
+      - name: Run the contract test suite
+        run: bash scripts/test.sh
 
-  build-legacy:
+  build-linux:
     needs: validate
     # 默认不跑。老版本「不动也会坏」的解法就是根本不重编。
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'legacy'
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 每铺通一个版本才加一行：definition.toml + Dockerfile + 这里。
-        # 待铺（末版号取自 php.net/eol.php，均 EOL 固定）：
-        #   5.6.40 / 7.2.34 / 7.3.33 / 7.4.33 / 8.0.30 / 8.1.34
-        # 复用 3 代模板，不要为每个版本复制一份 Dockerfile。
-        include:
-          - version: 5.4.45
-            dockerfile: build/Dockerfile.5.4
-            artifact: php-5.4.45-linux-x86_64.tar.gz
+        version: [5.4.45, 5.6.40, 7.2.34, 7.3.33, 7.4.33, 8.0.30, 8.1.34]
+        platform: [linux-x86_64, linux-arm64]
+    # arm64 必须用原生 runner：QEMU 下编 PHP 要数小时，而且会把真实失败掩盖成超时。
+    runs-on: ${{ matrix.platform == 'linux-arm64' && 'ubuntu-24.04-arm' || 'ubuntu-22.04' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: docker/setup-buildx-action@v3
+      - name: Resolve template for this version/platform
+        id: t
+        run: |
+          dockerfile="$(python3 - "${{ matrix.version }}" "${{ matrix.platform }}" <<'PY'
+          import sys, tomllib
+          ver, plat = sys.argv[1], sys.argv[2]
+          d = tomllib.load(open(f'versions/{ver}.toml', 'rb'))
+          # 5.4.45 的 amd64 档案只覆盖 x86_64（写死了 lib/x86_64-linux-gnu），
+          # 其它平台切到同一契约的通用模板。
+          tpl = d.get('dockerfile')
+          if plat != 'linux-x86_64' and d.get('dockerfile_generic'):
+              tpl = d['dockerfile_generic']
+          print(tpl)
+          PY
+          )"
+          echo "dockerfile=$dockerfile" >> "$GITHUB_OUTPUT"
+          echo "using $dockerfile for ${{ matrix.version }} / ${{ matrix.platform }}"
       - name: Refuse placeholder base digest
         run: |
-          if grep -q 'REPLACE_WITH_DIGEST' '${{ matrix.dockerfile }}'; then
-            echo "Replace the base image digest and mirror it to your own registry first." >&2
-            echo "A tag is not a frozen input; the freeze contract requires a digest." >&2
+          if grep -q 'REPLACE_WITH_DIGEST' '${{ steps.t.outputs.dockerfile }}'; then
+            echo "Resolve the base index digest first: bash scripts/pin-base.sh <image:tag> --write" >&2
+            echo "A tag is not a frozen input, and only an index digest pins amd64+arm64 together." >&2
             exit 1
           fi
-      - name: Frozen inputs present and intact
+      - name: Fetch frozen inputs and prove nothing drifted
+        # 输入源码不进 git（80MB 且随时可从上游重取），SOURCES.json 是完整性契约。
+        # 真正的门禁是最后那步 git diff：vendor.sh 若从上游拿到不同的字节，
+        # versions/*.toml 就会被改写，diff 立刻暴露「上游漂移或定义未冻结」。
         run: |
-          test -s keys/jessie.gpg || { echo "keys/jessie.gpg missing (export from Debian archive keyring)"; exit 1; }
-          test -s vendor/SOURCES.json || { echo "run: bash scripts/vendor.sh --write"; exit 1; }
-          python3 - <<'PY'
-          import json, hashlib, pathlib, sys
-          src = json.load(open('vendor/SOURCES.json'))
-          for name, meta in src.items():
-              p = pathlib.Path('vendor') / name
-              if not p.is_file():
-                  sys.exit(f"missing frozen input: {p}")
-              got = hashlib.sha256(p.read_bytes()).hexdigest()
-              if got != meta['sha256']:
-                  sys.exit(f"sha256 mismatch: {name}")
-          print('frozen inputs verified:', ', '.join(src))
-          PY
+          bash scripts/vendor.sh --versions "${{ matrix.version }}"
+          test -s vendor/SOURCES.json
+          if ! git diff --exit-code -- versions/ vendor/SOURCES.json; then
+            echo "::error::build inputs drifted from the committed definition — refusing to build" >&2
+            exit 1
+          fi
+      - name: Expand definition into build inputs
+        # 三个 Dockerfile 都 COPY build/.gen/，而 .gen 是生成物（gitignore）。
+        # l2.sh 会在本地第 2/6 步生成它，CI 没人干这活 —— 少了这步 docker build
+        # 会直接挂在 "build/.gen: not found"，而且报错指向 COPY 行，看不出原因是
+        # 少了展开步骤。macOS 那条走 build/macos.sh，脚本内部自己会生成。
+        run: python3 scripts/gen-build-inputs.py "${{ matrix.version }}"
       - name: Build in isolated base, extract artifact
         run: |
-          docker build --file '${{ matrix.dockerfile }}' \
-                       --tag "asdf-php-build:${{ matrix.version }}" .
-          cid="$(docker create "asdf-php-build:${{ matrix.version }}")"
+          docker build --platform "linux/${{ matrix.platform == 'linux-arm64' && 'arm64' || 'amd64' }}" \
+                       --file '${{ steps.t.outputs.dockerfile }}' \
+                       --build-arg PHP_VERSION='${{ matrix.version }}' \
+                       --build-arg ARTIFACT_ARCH='${{ matrix.platform == 'linux-arm64' && 'arm64' || 'x86_64' }}' \
+                       --tag "asdf-php-build:${{ matrix.version }}-${{ matrix.platform }}" .
+          cid="$(docker create --platform "linux/${{ matrix.platform == 'linux-arm64' && 'arm64' || 'amd64' }}" \
+                 "asdf-php-build:${{ matrix.version }}-${{ matrix.platform }}")"
           mkdir -p out
           docker cp "$cid:/out/." out/
           docker rm "$cid"
-          test -s "out/${{ matrix.artifact }}"
-          test -s "out/${{ matrix.artifact }}.sha256"
-          printf 'built %s  sha256=' '${{ matrix.artifact }}'
-          cat "out/${{ matrix.artifact }}.sha256"
-      - name: Smoke on a clean host path (relocation + extensions)
-        # 构建容器内 php -m 有 redis/swoole 不等于制品可用：CI runner 把
-        # tar.gz 解包到全新路径，正好验证 conf.d / extension_dir 的重定位。
-        # 冒烟不过就不允许 upload / publish。
-        run: env -u PHPRC -u PHP_INI_SCAN_DIR -u ASDF_PHP_PREFIX bash scripts/smoke-artifact.sh "out/${{ matrix.artifact }}" "${{ matrix.version }}"
+          ls -l out
+      - name: Smoke on a clean host path (relocation + extensions + features)
+        # 构建容器内 php -m 有 redis/swoole 不等于制品可用：runner 把 tar.gz 解包到
+        # 全新路径，正好验证 conf.d / extension_dir 的重定位。冒烟不过不许 upload。
+        run: |
+          art="$(basename "$(ls out/php-*.tar.gz)")"
+          env -u PHPRC -u PHP_INI_SCAN_DIR -u ASDF_PHP_PREFIX \
+            bash scripts/smoke-artifact.sh "out/$art" "${{ matrix.version }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: php-${{ matrix.version }}
+          name: php-${{ matrix.version }}-${{ matrix.platform }}
           path: out/*
           retention-days: 90
       - name: Archive permanently in Releases
@@ -147,8 +203,52 @@ jobs:
           files: out/*
           body: |
             Frozen legacy build. Not rebuilt automatically.
-            See manifest.json for the safety label (5.4 = INSECURE / offline-only).
+            See manifest.json for the safety label and per-platform sha256.
             Update manifest sha256 + status and versions.txt after publishing.
+
+  build-macos:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'legacy'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 5.x / 7.2-7.4 只出 x86_64：苹果芯通过 Rosetta 2 跑同一制品，矩阵直接减半。
+          # 8.0/8.1 额外出 arm64，因为现代项目主力机器是 Apple Silicon。
+          - { version: 5.4.45, arch: x86_64, runner: macos-13 }
+          - { version: 5.6.40, arch: x86_64, runner: macos-13 }
+          - { version: 7.2.34, arch: x86_64, runner: macos-13 }
+          - { version: 7.3.33, arch: x86_64, runner: macos-13 }
+          - { version: 7.4.33, arch: x86_64, runner: macos-13 }
+          - { version: 8.0.30, arch: x86_64, runner: macos-13 }
+          - { version: 8.0.30, arch: arm64,  runner: macos-14 }
+          - { version: 8.1.34, arch: x86_64, runner: macos-13 }
+          - { version: 8.1.34, arch: arm64,  runner: macos-14 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch frozen inputs and prove nothing drifted
+        run: |
+          bash scripts/vendor.sh --versions "${{ matrix.version }}"
+          if ! git diff --exit-code -- versions/ vendor/SOURCES.json; then
+            echo "::error::build inputs drifted from the committed definition — refusing to build" >&2
+            exit 1
+          fi
+      - name: Native build (no Docker on macOS)
+        run: bash build/macos.sh "${{ matrix.version }}" --arch "${{ matrix.arch }}" --install-deps
+      - name: Smoke on a clean host path
+        run: |
+          art="$(basename "$(ls out/php-*.tar.gz)")"
+          env -u PHPRC -u PHP_INI_SCAN_DIR -u ASDF_PHP_PREFIX \
+            bash scripts/smoke-artifact.sh "out/$art" "${{ matrix.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.version }}-darwin-${{ matrix.arch }}
+          path: out/*
+          retention-days: 90
 
   build-current:
     needs: validate
@@ -168,6 +268,6 @@ jobs:
             echo "versions/current/ empty: add one definition.toml per new PHP major."
             echo "current channel starts at 8.2 (see manifest.json -> support_matrix / current_channel)."
           else
-            echo "current-channel matrix build is intentionally not implemented in V1."
-            echo "Ship the 5.4 legacy chain first, then add the G3 matrix here (OpenSSL 3.x base)."
+            echo "current-channel matrix build is intentionally not implemented yet."
+            echo "Ship the legacy matrix first, then add the current matrix here (G3 template, OpenSSL 3.x)."
           fi

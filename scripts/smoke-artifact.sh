@@ -75,7 +75,10 @@ fi
 
 # 3b) 带着制品自带的 lib/ 解析所有 ELF：任何 "not found" 都说明自包含没做全。
 # 这是「换台机器能不能跑」的硬断言，比在构建容器里 php -v 更有说服力。
-if command -v ldd >/dev/null 2>&1 && [ -d "$d/lib" ]; then
+# macOS 走另一条路：Apple 不允许分发 libSystem，所以 macOS 制品谈不上自包含，
+# 能验的是「非系统依赖是否都改成了 @loader_path/@rpath 相对引用」——
+# 只要还有一条 /usr/local 或构建目录的绝对路径，换台机器就是 dyld 报错。
+if [ -d "$d/lib" ] && command -v ldd >/dev/null 2>&1; then
   unresolved=0
   while IFS= read -r f; do
     miss="$(LD_LIBRARY_PATH="$d/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
@@ -88,6 +91,24 @@ if command -v ldd >/dev/null 2>&1 && [ -d "$d/lib" ]; then
   done < <(find "$d" -type f \( -name '*.so' -o -name '*.bin' \) -print)
   if [ "$unresolved" -eq 0 ]; then
     echo "  [PASS] all bundled ELFs resolve with lib/ on the loader path"
+  else
+    exit 1
+  fi
+elif [ -d "$d/lib" ] && command -v otool >/dev/null 2>&1; then
+  bad=0
+  while IFS= read -r f; do
+    otool -L "$f" >/dev/null 2>&1 || continue
+    leaks="$(otool -L "$f" | awk 'NR > 1 {print $1}' \
+      | grep -vE '^(/usr/lib/|/System/|@rpath/|@loader_path/|@executable_path/)' \
+      | grep -vE '^$' || true)"
+    if [ -n "$leaks" ]; then
+      echo "  [FAIL] absolute non-system dependency left in $f:"
+      printf '%s\n' "$leaks" | sed 's/^/         /' | head -8
+      bad=1
+    fi
+  done < <(find "$d" -type f -perm -u+x -print)
+  if [ "$bad" -eq 0 ]; then
+    echo "  [PASS] no absolute non-system dylib path left (rpath relocation applied)"
   else
     exit 1
   fi
@@ -155,6 +176,32 @@ for ext in "${want_exts[@]}"; do
   fi
 done
 [ "$ext_fail" -eq 0 ] || exit 1
+
+# 4b) 功能探针：扩展加载了不代表功能在。
+# configure flag 写错的真实后果是「静默缺席」而不是报错 —— --with-mysql 在 PHP 7.0
+# 被移除、--with-gd 在 8.1 改名成 --enable-gd、7.4 起 gd 的外部库开关改名为
+# --with-jpeg/--with-freetype，写旧名字只会得到一行 "unrecognized options" 警告，
+# 编出来照样能跑，只是图像函数全没了。这类坑只能在运行时按函数直探。
+cat > "$d/.feature-probe.php" <<'PHP'
+<?php
+$want = ['mb_strlen', 'curl_init', 'imagecreatefromjpeg', 'imagecreatefrompng',
+         'imagecreatetruecolor', 'mysqli_connect', 'openssl_encrypt', 'gzencode'];
+$missing = [];
+foreach ($want as $f) {
+    if (!function_exists($f)) { $missing[] = $f; }
+}
+if (!class_exists('ZipArchive')) { $missing[] = 'ZipArchive'; }
+$drivers = class_exists('PDO') ? PDO::getAvailableDrivers() : array();
+if (!in_array('mysql', $drivers)) { $missing[] = 'pdo_mysql'; }
+echo $missing ? 'MISSING ' . implode(' ', $missing) : 'OK';
+PHP
+probe="$("$d/bin/php" "$d/.feature-probe.php" 2>&1 || true)"
+rm -f "$d/.feature-probe.php"
+case "$probe" in
+  OK) echo "  [PASS] feature probe: mbstring curl gd(jpeg,png) mysqli pdo_mysql openssl zip zlib" ;;
+  *)  echo "  [FAIL] feature probe: ${probe:-<no output>} — a configure flag is wrong for this version"
+      exit 1 ;;
+esac
 
 # 5) build identity: proves the frozen toolchain was actually used
 "$d/bin/php" -i 2>/dev/null | grep -iE 'Configure Command|OpenSSL (Library|Header) Version' | head -5 || true

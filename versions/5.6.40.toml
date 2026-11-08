@@ -1,0 +1,47 @@
+# asdf-php v2 / frozen build definition — G1
+version = "5.6.40"
+channel = "legacy"
+generation = "g1"
+dockerfile = "build/Dockerfile.g1"
+safety = { patched = false, network_policy = "offline-only" }
+
+[source]
+url    = "https://museum.php.net/php5/php-5.6.40.tar.gz"
+path   = "vendor/php-5.6.40.tar.gz"
+sha256 = "56fb9878d12fdd921f6a0897e919f4e980d930160e154cbde2cc6d9206a27cac"
+
+[base]
+# 与 5.4 同一张 jessie；arm64 前必须先用 scripts/pin-base.sh 确认该 digest
+# 覆盖 linux/arm64，否则 docker 会直接拒绝而不是猜。
+image             = "debian:jessie@sha256:32ad5050caffb2c7e969dac873bce2c370015c2256ff984b70c1c08b3a2816a0"
+apt_snapshot      = "http://archive.debian.org/debian jessie main"
+keyring           = "keys/jessie.gpg"
+check_valid_until = false
+
+[toolchain]
+openssl = { version = "1.0.2u", path = "vendor/openssl-1.0.2u.tar.gz", sha256 = "ecd0c6ffb493dd06707d38b14bb4d8c2288bb7033735606569d8f90f89669d16" }
+bison   = { version = "2.7",    path = "vendor/bison-2.7.tar.gz",      sha256 = "19bbe7374fd602f7a6654c131c21a15aebdc06cc89493e8ff250cb7f9ed0a831" }
+gcc     = "jessie-default"
+
+[configure]
+# 与 5.4 的差异只有两条：5.6 起 opcache 成了独立扩展（--enable-opcache），
+# 且 bundled zip 仍可用（--enable-zip，到 7.2 才换成 libzip）。
+# SSL 隔离契约与 5.4 完全一致：自建 1.0.2u 只服务 ext/openssl，curl 走 GnuTLS，
+# 不编 pgsql（G1 一律不碰第二套 SSL 链，见 build/Dockerfile.g1 文件头）。
+flags = [
+  "--with-openssl=/opt/toolchain/openssl-1.0.2u",
+  "--enable-mbstring", "--enable-zip", "--with-curl", "--with-gd",
+  "--with-mysql", "--with-mysqli", "--with-pdo-mysql",
+  "--enable-opcache",
+]
+
+[extensions]
+# phpredis 2.x 是 PHP 5.x 最后分支；swoole 1.10.5 覆盖 5.4-7.2。
+redis  = "2.2.8"
+swoole = "1.10.5"
+
+[artifact]
+# 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
+# T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
+targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64"]
+name = "php-5.6.40-{os}-{arch}.tar.gz"

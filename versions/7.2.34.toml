@@ -8,7 +8,7 @@ safety = { patched = false, network_policy = "offline-only" }
 [source]
 url    = "https://www.php.net/distributions/php-7.2.34.tar.gz"
 path   = "vendor/php-7.2.34.tar.gz"
-sha256 = "FILL:php-7.2.34.tar.gz"
+sha256 = "8b2777c741e83f188d3ca6d8e98ece7264acafee86787298fae57e05d0dddc78"
 
 [base]
 # bullseye 自带的 1.1.1 直接够用：8.0 及以下不能配 OpenSSL 3.0（#81540）。

@@ -57,7 +57,7 @@ def main() -> int:
     blocked: list[str] = []
     changed = 0
     for p in sorted((root / "versions").glob("*.toml")):
-        original = p.read_text()
+        original = p.read_text(encoding="utf-8")
         if "FILL:" not in original:
             continue
         text = original
@@ -73,7 +73,7 @@ def main() -> int:
         if left:
             # 不在本轮范围：能填的先填，剩下的留给它自己那一轮。
             if text != original:
-                p.write_text(text)
+                p.write_text(text, encoding="utf-8", newline="\n")
                 changed += 1
             print(
                 f"partial {p.relative_to(root)} "
@@ -81,7 +81,7 @@ def main() -> int:
             )
             continue
 
-        p.write_text(text)
+        p.write_text(text, encoding="utf-8", newline="\n")
         changed += 1
         print(f"filled {p.relative_to(root)}")
 

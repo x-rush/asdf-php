@@ -8,7 +8,7 @@ safety = { patched = false, network_policy = "offline-only" }
 [source]
 url    = "https://www.php.net/distributions/php-7.4.33.tar.gz"
 path   = "vendor/php-7.4.33.tar.gz"
-sha256 = "FILL:php-7.4.33.tar.gz"
+sha256 = "5a2337996f07c8a097e03d46263b5c98d2c8e355227756351421003bea8f463e"
 
 [base]
 image   = "debian:bullseye-slim@sha256:e5b6442dd2e9684cf5e87d8338b5968f3b348636fc0be6d7850a381e3731a2bd"

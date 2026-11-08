@@ -4,6 +4,12 @@
 version = "5.4.45"
 channel = "legacy"
 safety  = { patched = false, network_policy = "offline-only" }
+generation = "g1"
+# linux-x86_64 复现已发布制品（sha256 21b9a98a…）就用这份档案，别改它；
+# 其它平台（arm64 / macOS 交叉）走 g1 通用模板 —— 它把 lib/x86_64-linux-gnu
+# 换成了 dpkg-architecture 探测，是同一契约的多架构版本。
+dockerfile         = "build/Dockerfile.5.4"
+dockerfile_generic = "build/Dockerfile.g1"
 
 [source]
 # 取自 museum.php.net/php5/php-5.4.45.tar.gz，首次 vendor 后固定在自建 registry
@@ -61,6 +67,9 @@ swoole = "1.10.5"
 redis  = "2.2.8"
 
 [artifact]
+# 本版本实际要产出的制品清单。manifest.json 的 artifacts 必须与本行完全一致，
+# T3f 双向比对；多写会指到一个不存在的下载地址，少写会让已产出的平台无人知道。
+targets = ["linux-x86_64", "linux-arm64", "darwin-x86_64"]
 name = "php-5.4.45-linux-x86_64.tar.gz"
 # 制品自包含：构建末尾用 ldd 枚举 jessie 私有 soname 打进 lib/（排除 glibc 家族），
 # bin/php 换成设 LD_LIBRARY_PATH 的 wrapper、真实 ELF 在 libexec/php.bin，

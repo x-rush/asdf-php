@@ -1,0 +1,108 @@
+# asdf-php v2 / G1 模板：PHP 5.4 - 5.6 on Debian 8 jessie
+#
+# 与 build/Dockerfile.5.4 的关系：那个文件是 5.4.45 amd64 已发布制品的**历史档案**
+# （复现它就用它，别改）。本文件是 G1 的**活动模板**，同一个契约、多架构支持，
+# 供 5.6.40 与 5.4.45 的非 amd64 平台使用。
+#
+# 多架构：jessie 是 multiarch，库在 /usr/lib/<triplet>。5.4 时代硬编码了
+# lib/x86_64-linux-gnu，arm64 上必须换成 lib/aarch64-linux-gnu，所以这里一律用
+# dpkg-architecture 探测，不再写字面值。OpenSSL 的 ./Configure target 同样要跟着
+# 架构走（linux-x86_64 / linux-aarch64），写死就变成「编译到一半才发现」。
+#
+# 冻结契约（5.4 上实测出的两连坑，这里原样保留）：
+# 自建 OpenSSL 1.0.2u 只服务 ext/openssl，绝不与 jessie 系统库共享链接空间。
+# Debian 给 libssl.so.1.0.0 打了 symbol version script（SSL_*@OPENSSL_1.0.0），
+# 上游 1.0.2u 不带版本节点；--with-openssl=<prefix> 注入的 -L 会让链接器优先选中
+# 自建库，系统库的版本化引用全部变成 undefined reference。已实测两例：libcurl
+# （换 GnuTLS 后端物理隔离）、libpq（本代不编 pgsql 驱动）。T3b 守住这条。
+ARG BASE_IMAGE=debian:jessie@sha256:32ad5050caffb2c7e969dac873bce2c370015c2256ff984b70c1c08b3a2816a0
+FROM ${BASE_IMAGE}
+
+ARG PHP_VERSION=5.6.40
+ARG ARTIFACT_ARCH=x86_64
+ARG PHP_DIR=/opt/php/${PHP_VERSION}
+
+COPY keys/jessie.gpg /etc/apt/trusted.gpg.d/jessie.gpg
+# archive.debian.org 的 jessie 签名密钥早已过期（实测 KEYEXPIRED 1587841717 等）：
+# apt-get update 放行、install 把 84 个包全判为 cannot be authenticated 并 exit 100。
+# 只在这个一次性构建容器里对该源跳过签名校验；制品可复现性由 base digest +
+# vendor/ 的 sha256 锁定，不依赖 apt 签名。
+RUN set -eux; \
+    printf '%s\n' \
+      'deb [trusted=yes] http://archive.debian.org/debian jessie main' \
+      'deb [trusted=yes] http://archive.debian.org/debian-security jessie/updates main' \
+      > /etc/apt/sources.list; \
+    printf '%s\n' \
+      'Acquire::Check-Valid-Until "false";' \
+      'Acquire::AllowInsecureRepositories "true";' \
+      > /etc/apt/apt.conf.d/99-archive; \
+    apt-get update; \
+    apt-get install -y --allow-unauthenticated --no-install-recommends \
+      build-essential autoconf re2c pkg-config file dpkg-dev bison \
+      libxml2-dev libcurl4-gnutls-dev libjpeg-dev libpng-dev \
+      libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY vendor/ /opt/vendor/
+COPY build/.gen/ /opt/gen/
+COPY scripts/ /opt/scripts/
+
+# PHP_SETUP_OPENSSL 在 $prefix/$PHP_LIBDIR 下找 libssl.(a|so)：--with-libdir 传的是
+# lib/<triplet>，OpenSSL 就必须装到同一个子目录（Configure 见 $prefix/lib64 不存在
+# 即清空 multilib），两边对齐才对得上。下面两个 test -r 是 fail-fast 断言。
+RUN set -eux; \
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) ossl_target=linux-x86_64 ;; \
+      arm64) ossl_target=linux-aarch64 ;; \
+      *) echo "FATAL: unsupported arch $(dpkg --print-architecture)"; exit 1 ;; \
+    esac; \
+    cd /opt/vendor; \
+    tar xzf bison-2.7.tar.gz; cd bison-2.7; \
+      ./configure --prefix=/opt/toolchain; make -j"$(nproc)"; make install; \
+    cd /opt/vendor; \
+    tar xzf openssl-1.0.2u.tar.gz; cd openssl-1.0.2u; \
+      ./Configure --prefix=/opt/toolchain/openssl-1.0.2u \
+        --libdir="lib/$multiarch" -fPIC shared "$ossl_target"; \
+      make -j"$(nproc)"; make install_sw; \
+    cd /opt/vendor; \
+    tar xzf "php-${PHP_VERSION}.tar.gz"; cd "php-${PHP_VERSION}"; \
+      PATH=/opt/toolchain/bin:$PATH ./buildconf --force; \
+      test -r /opt/toolchain/openssl-1.0.2u/include/openssl/evp.h; \
+      test -r "/opt/toolchain/openssl-1.0.2u/lib/$multiarch/libssl.so"; \
+      if [ -f "/opt/gen/${PHP_VERSION}.env" ]; then set -a; . "/opt/gen/${PHP_VERSION}.env"; set +a; fi; \
+      ./configure --prefix="$PHP_DIR" \
+        --with-config-file-path="$PHP_DIR/etc" \
+        --with-config-file-scan-dir="$PHP_DIR/etc/conf.d" \
+        --with-libdir="lib/$multiarch" \
+        --with-openssl=/opt/toolchain/openssl-1.0.2u \
+        $(cat "/opt/gen/${PHP_VERSION}.flags") \
+        || { echo "=== configure failed; config.log tail ==="; tail -n 200 config.log; exit 1; }; \
+      make -j"$(nproc)"; make install; \
+    mkdir -p "$PHP_DIR/etc/conf.d"
+
+# 扩展一律用 vendor 源码 + 本版本自带的 phpize/php-config 编译，保证 ABI 对齐。
+# 与 5.4 档案不同：这里不再 soft-fail —— 扩展静默缺失比构建失败更糟，
+# smoke 已经是硬门禁，构建期就该停。
+RUN set -eux; \
+    export PATH="$PHP_DIR/bin:$PATH"; \
+    if [ -f "/opt/gen/${PHP_VERSION}.env" ]; then set -a; . "/opt/gen/${PHP_VERSION}.env"; set +a; fi; \
+    extdir="$(php-config --extension-dir)"; mkdir -p "$extdir"; \
+    while read -r name tgz mod; do \
+      [ -n "$name" ] || continue; \
+      cd /opt/vendor; rm -rf "ext-$name"; mkdir "ext-$name"; \
+      tar xzf "$tgz" -C "ext-$name" --strip-components=1; \
+      cd "ext-$name"; \
+      phpize; \
+      ./configure --with-php-config="$PHP_DIR/bin/php-config"; \
+      make -j"$(nproc)"; make install; \
+      printf 'extension=%s.so\n' "$mod" > "$PHP_DIR/etc/conf.d/$mod.ini"; \
+    done < "/opt/gen/${PHP_VERSION}.ext"; \
+    php -m
+
+# 自包含 + 重定位 + 搬路径自检 + 打包，全部在 pack-artifact.sh 里（三模板共用）。
+RUN set -eux; \
+    sh /opt/scripts/pack-artifact.sh \
+      "$PHP_DIR" \
+      "php-${PHP_VERSION}-linux-${ARTIFACT_ARCH}.tar.gz" \
+      "/opt/gen/${PHP_VERSION}.ext"
