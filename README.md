@@ -11,6 +11,18 @@ asdf install php 7.4.33               # install a prebuilt artifact, if one is p
 
 `bin/install` checks `~/.asdf-php-dist` first, so a build you did yourself is all it needs. Publishing is optional; it only saves the next person from building the same thing.
 
+## Who this is for
+
+This is a narrow tool. Saying so up front saves everyone a wasted install.
+
+| If you are… | Verdict |
+|---|---|
+| Keeping a legacy PHP 5.x/7.x project buildable on Linux x86_64, after a distro upgrade broke the source build | this is exactly what it is for |
+| Needing a checksum-verified PHP in CI without a compiler on the runner | yes — build once, then install from `~/.asdf-php-dist` |
+| Looking for PHP 8.2+ or a current stable release | no — the matrix is frozen at the last EOL releases, 5.4.45 through 8.1.34 |
+| On macOS or arm64 Linux | no — no artifact has been built for either; those recipes are unverified |
+| Planning to put an EOL PHP behind a public endpoint | no — see [Security](#security) |
+
 ## Why this exists
 
 Compiling PHP 5.x or 7.x on a current distro fails for reasons that have nothing to do with PHP:
