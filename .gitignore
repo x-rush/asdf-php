@@ -2,6 +2,12 @@
 out/
 l2-*.log
 
+# generated build inputs (scripts/gen-build-inputs.py) and local build trees
+# (build/macos.sh stages prefixes and toolchains here)
+build/.gen/
+build/prefix/
+build/toolchain/
+
 # local smoke / regression scratch dirs
 .asdf-php-smoke.*/
 .smoke-reg/
