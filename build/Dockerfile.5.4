@@ -76,7 +76,11 @@ RUN set -eux; \
         --with-config-file-scan-dir=/opt/php/5.4.45/etc/conf.d \
         --with-libdir=lib/x86_64-linux-gnu \
         --with-openssl=/opt/toolchain/openssl-1.0.2u \
-        --enable-mbstring --enable-zip --with-curl --with-gd \
+      # 内置 GD：JPEG / FreeType 是各自独立的开关，默认 no。这一行必须和
+      # versions/5.4.45.toml 保持一致，scripts/test.sh 的 T3r 会比对两边。
+        --enable-mbstring --enable-zip --with-curl \
+        --with-gd --with-jpeg-dir=/usr --with-png-dir=/usr \
+        --with-freetype-dir=/usr \
         --with-mysql --with-mysqli --with-pdo-mysql \
         --with-zlib --with-iconv --enable-phar \
         --enable-bcmath --enable-sockets --enable-exif --enable-pcntl \

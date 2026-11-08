@@ -149,7 +149,37 @@ for f in phpize php-config pear pecl peardev; do
     echo "  [FAIL] bin/$f still hardcodes the build prefix"; exit 1
   fi
 done
-echo "  [PASS] no build-machine prefix left in bin/ helper scripts"
+
+# 3d) include_path：第四条焊进二进制的绝对路径。不覆盖它，解包后
+#     require 'PEAR.php' 会去构建机的 /opt/php/<ver>/lib/php 找文件。
+inc_line="$("$d/bin/php" -i 2>/dev/null | grep -i '^include_path' | head -1 || true)"
+if printf '%s' "$inc_line" | grep -q '/opt/php/'; then
+  echo "  [FAIL] include_path still points at the build prefix: $inc_line"; exit 1
+fi
+if printf '%s' "$inc_line" | grep -q "$d"; then
+  echo "  [PASS] include_path follows the unpack dir"
+else
+  echo "  [INFO] ${inc_line:-include_path unavailable}"
+fi
+
+# 3e) PEAR 的 etc/pear.conf 与 .registry/*.reg 是 serialize() 字节流，前缀只能
+#     在知道解包目录的运行时改。这里显式跑一次「用户第一次执行 pear」会跑的
+#     那一步，然后断言 bin/ etc/ lib/php/ 里一处 /opt/php 都不剩。
+#     （include/php/main/build-defs.h 保留 CONFIGURE_COMMAND，那是构建档案。）
+if [ -f "$d/etc/.pear-relocate" ] && [ -f "$d/libexec/pear-relocate.php" ]; then
+  "$d/bin/php" -n "$d/libexec/pear-relocate.php" "$d" >/dev/null 2>&1 || true
+fi
+leftover="$( cd "$d" && grep -rIl '/opt/php/' bin etc lib/php 2>/dev/null || true )"
+if [ -n "$leftover" ]; then
+  echo "  [FAIL] build prefix still baked into:"
+  printf '         %s\n' $leftover
+  exit 1
+fi
+if [ -f "$d/etc/.pear-relocate" ]; then
+  echo "  [FAIL] pear relocation marker survived — pear/pecl would keep the stale prefix"
+  exit 1
+fi
+echo "  [PASS] no build-machine prefix left in bin/ etc/ lib/php"
 
 # 4) extensions declared in versions/<ver>.toml — MISSING IS A HARD FAILURE.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -215,7 +245,18 @@ esac
 # 补上）。声明了 freetype、产物里却没有 imagettftext，说明 gd 是「静默降级」编出来的：
 # 图像函数全在，唯独画不上字。和 4b 同理，只有函数级探针抓得住。
 # 判据跟着定义走，不写死版本号：toml 里没声明 freetype 的版本（5.4/5.6）不参与。
-if [ -n "$expected" ] && [ -f "$defn" ] && grep -qE '^[[:space:]]*"--with-freetype' "$defn"; then
+# 判断某个 flag 是否写进了 flags 数组。两个坑：
+#   ① 不能要求 flag 独占一行 —— 7.2/7.4/8.x 把 gd 的开关和 --enable-gd 写在同一行，
+#      旧写法 '^[[:space:]]*"--with-freetype' 于是把整个 7.x 都漏了，门禁形同不存在。
+#   ② 不能全文 grep —— toml 里解释改名历史的注释同样含 --with-freetype。
+# 只取 flags = [ ... ] 之间的内容并剥掉注释行，才是「真的声明了」。
+declares_flag() { # <toml> <flag-prefix>
+  sed -n '/^flags[[:space:]]*=[[:space:]]*\[/,/^\]/p' "$1" \
+    | grep -v '^[[:space:]]*#' \
+    | grep -q -- "$2"
+}
+
+if [ -n "$expected" ] && [ -f "$defn" ] && declares_flag "$defn" --with-freetype; then
   ft="$("$d/bin/php" -r 'echo function_exists("imagettftext") ? "ok" : "no";' 2>&1 | tail -1)"
   case "$ft" in
     ok) echo "  [PASS] gd freetype: imagettftext available (declared in versions/$expected.toml)" ;;

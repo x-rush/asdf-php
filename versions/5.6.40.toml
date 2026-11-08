@@ -30,7 +30,11 @@ gcc     = "jessie-default"
 # 不编 pgsql（G1 一律不碰第二套 SSL 链，见 build/Dockerfile.g1 文件头）。
 flags = [
   "--with-openssl=/opt/toolchain/openssl-1.0.2u",
-  "--enable-mbstring", "--enable-zip", "--with-curl", "--with-gd",
+  "--enable-mbstring", "--enable-zip", "--with-curl",
+  # 5.x 内置 GD 的 JPEG / FreeType 是各自的独立开关，默认 no。理由见
+  # 5.4.45.toml 同一段：漏写不会报错，只会让 gd_info() 少两项。
+  "--with-gd", "--with-jpeg-dir=/usr", "--with-png-dir=/usr",
+  "--with-freetype-dir=/usr",
   "--with-mysql", "--with-mysqli", "--with-pdo-mysql",
   "--enable-opcache",
   # 基础扩展集，见 5.4.45.toml 同一段注释（zlib/iconv/phar/bcmath/

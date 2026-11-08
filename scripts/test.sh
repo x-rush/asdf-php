@@ -701,6 +701,125 @@ else
   fail "T3u shim passthrough broken: cflags=[$t3u_cflags] libs=[$t3u_libs]"
 fi
 
+# T3v: PEAR 的 etc/pear.conf 与 .registry/*.reg 是 serialize() 字节流，
+# 每个值带 s:<len>:"..." 长度前缀。sed 换路径会把长度写错、PEAR 读不出来；
+# 而且替换目标是「解包到哪」，构建时根本不知道 —— 只能运行时改一次。
+if grep -q 'include_path=.:${ASDF_PHP_PREFIX}/lib/php' "$root/scripts/relocate.sh"; then
+  pass "T3v relocate.sh pins include_path (the 4th baked-in absolute path)"
+else
+  fail "T3v include_path not relocated — require 'PEAR.php' would look in /opt/php after unpack"
+fi
+
+if grep -q 'etc/.pear-relocate' "$root/scripts/relocate.sh" \
+   && grep -q 'libexec/pear-relocate.php' "$root/scripts/relocate.sh" \
+   && grep -q 'strlen($val)' "$root/scripts/relocate.sh"; then
+  pass "T3v pear data files get a runtime relocator that recomputes serialize lengths"
+else
+  fail "T3v pear.conf/.registry relocator missing — a plain sed leaves s:<len> lying"
+fi
+
+if grep -q 'no build-machine prefix left in bin/ etc/ lib/php' "$root/scripts/smoke-artifact.sh" \
+   && grep -q 'include_path' "$root/scripts/smoke-artifact.sh"; then
+  pass "T3v smoke asserts the whole tree is prefix-free, not just bin/"
+else
+  fail "T3v smoke only scans bin/ — an etc/pear.conf regression would ship silently"
+fi
+
+# 行为断言：长度前缀必须真的跟着重算。造一份真实的 PEAR_Config（两个值含 prefix，
+# 一个不含），跑 relocator，再 unserialize 回来 —— 只看源码里有没有 strlen 不算验证。
+if command -v php >/dev/null 2>&1; then
+  mkdir -p "$tmp/t3v/etc"
+  printf '#PEAR_Config 0.9\n%s' \
+    "$(php -n -r 'echo serialize(array("php_dir"=>"/opt/php/9.9.9/lib/php","bin_dir"=>"/opt/php/9.9.9/bin","cache_dir"=>"/tmp/pear/cache"));')" \
+    > "$tmp/t3v/etc/pear.conf"
+  printf '%s\n' "/opt/php/9.9.9" > "$tmp/t3v/etc/.pear-relocate"
+  awk '/cat > libexec\/pear-relocate.php <<.PHPEOF./{f=1;next} /^PHPEOF$/{f=0} f' \
+    "$root/scripts/relocate.sh" > "$tmp/t3v/reloc.php"
+  php -n "$tmp/t3v/reloc.php" "$tmp/t3v" >/dev/null 2>&1 || true
+  t3v_out="$(php -n -r '
+    $r = file_get_contents($argv[1]);
+    $p = strpos($r, "\n");
+    $a = unserialize(substr($r, $p + 1));
+    if (!is_array($a)) { echo "BROKEN"; return; }
+    echo $a["php_dir"], "|", $a["bin_dir"], "|", $a["cache_dir"];
+  ' "$tmp/t3v/etc/pear.conf" 2>/dev/null || true)"
+  if [ "$t3v_out" = "$tmp/t3v/lib/php|$tmp/t3v/bin|/tmp/pear/cache" ] \
+     && [ ! -f "$tmp/t3v/etc/.pear-relocate" ]; then
+    pass "T3v relocator rewrites serialize() values, preserves lengths, drops the marker"
+  else
+    fail "T3v relocator broke pear.conf: [$t3v_out]"
+  fi
+else
+  pass "T3v serialize-relocation behaviour skipped (no php on this host)"
+fi
+
+# T3w: GD 的 JPEG / FreeType 在两代 PHP 里都不是 --with-gd 的附赠品。
+# 5.x 走 bundled GD，要 --with-jpeg-dir / --with-freetype-dir；7.4 起才换成
+# --with-jpeg / --with-freetype。少了哪一个，configure 全绿、gd_info() 里对应项
+# 直接是 NO，函数不存在 —— 2026-11-08 的 5.4/5.6 就是这么缺了 JPEG 和 imagettftext。
+# smoke 的 feature probe 要到制品编完 40 分钟后才报，这里在建之前就拦住。
+if python3 - "$root" <<'PY' 2>"$tmp/t3w.err"
+import pathlib, sys, tomllib
+
+root = pathlib.Path(sys.argv[1])
+GD = {"--with-gd", "--enable-gd"}
+JPEG = {"--with-jpeg", "--with-jpeg-dir"}
+FREETYPE = {"--with-freetype", "--with-freetype-dir"}
+bad = []
+for toml in sorted((root / "versions").glob("*.toml")):
+    data = tomllib.loads(toml.read_text(encoding="utf-8"))
+    flags = data.get("configure", {}).get("flags", [])
+    names = {f.split("=", 1)[0] for f in flags}
+    if not (names & GD):
+        continue
+    missing = []
+    if not (names & JPEG):
+        missing.append("jpeg")
+    if not (names & FREETYPE):
+        missing.append("freetype")
+    if missing:
+        bad.append(f"{toml.name}: gd without {'/'.join(missing)}")
+assert not bad, "; ".join(bad)
+print("ok")
+PY
+then
+  pass "T3w every version that enables gd also asks for jpeg and freetype"
+else
+  fail "T3w gd without jpeg/freetype (silent feature loss): $(tail -2 "$tmp/t3w.err")"
+fi
+
+# T3x: smoke 的 4c freetype 门禁曾经用 '^[[:space:]]*"--with-freetype' 匹配 toml，
+# 而 7.2/7.4/8.x 把 gd 的开关和 --enable-gd 写在同一行 —— 于是整个 7.x 都被跳过，
+# 门禁看着在、实际只对 5.4/5.6 生效。这里用一份「同一行」的定义把行为钉住：
+# 提取规则必须能命中，且不能把注释里的 --with-freetype 当成声明。
+mkdir -p "$tmp/t3x"
+cat > "$tmp/t3x/inline.toml" <<'TOML'
+[configure]
+flags = [
+  # 注释里提到 --with-freetype-dir 不该算声明
+  "--enable-gd", "--with-freetype", "--with-jpeg",
+]
+TOML
+cat > "$tmp/t3x/comment-only.toml" <<'TOML'
+[configure]
+flags = [
+  # 只是解释历史：--with-freetype-dir 在 7.4 被改名
+  "--enable-mbstring",
+]
+TOML
+t3x_declares() {
+  sed -n '/^flags[[:space:]]*=[[:space:]]*\[/,/^\]/p' "$1" \
+    | grep -v '^[[:space:]]*#' \
+    | grep -q -- "$2"
+}
+if grep -q 'declares_flag' "$root/scripts/smoke-artifact.sh" \
+   && t3x_declares "$tmp/t3x/inline.toml" --with-freetype \
+   && ! t3x_declares "$tmp/t3x/comment-only.toml" --with-freetype; then
+  pass "T3x smoke's freetype gate reads flags inline, not one-per-line (7.x used to be skipped)"
+else
+  fail "T3x freetype gate is line-anchored or comment-blind — 7.x would slip through unverified"
+fi
+
 echo "== asdf-php v2 / L1 artifact-repo contract =="
 # The fake release server serves the artifact name bin/install would request on
 # a SUPPORTED host. It is pinned to linux-x86_64 rather than derived from the

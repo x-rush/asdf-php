@@ -40,7 +40,9 @@ RUN sh /tmp/apt-install.sh jessie \
 
 COPY vendor/ /opt/vendor/
 COPY build/.gen/ /opt/gen/
-COPY scripts/ /opt/scripts/
+# scripts/ 故意不在这里 COPY。它在编译前落盘，改任何一个字节都会让下面的
+# configure/make 层全部作废（实测 5.6 因此每次白等 30-50 分钟）。打包只用到
+# pack-artifact.sh 和它调用的 relocate.sh，所以放到打包步前一行。
 
 # PHP_SETUP_OPENSSL 在 $prefix/$PHP_LIBDIR 下找 libssl.(a|so)：--with-libdir 传的是
 # lib/<triplet>，OpenSSL 就必须装到同一个子目录（Configure 见 $prefix/lib64 不存在
@@ -94,6 +96,8 @@ RUN set -eux; \
       printf 'extension=%s.so\n' "$mod" > "$PHP_DIR/etc/conf.d/$mod.ini"; \
     done < "/opt/gen/${PHP_VERSION}.ext"; \
     php -m
+
+COPY scripts/pack-artifact.sh scripts/relocate.sh /opt/scripts/
 
 # 自包含 + 重定位 + 搬路径自检 + 打包，全部在 pack-artifact.sh 里（三模板共用）。
 RUN set -eux; \

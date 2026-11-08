@@ -14,6 +14,13 @@ build/toolchain/
 .runcheck/
 .smoketest/
 
+# locally built tarballs that bin/install picks up before any release download.
+# The real location is $HOME/.asdf-php-dist; the repo-relative form is listed
+# because it is easy to create by accident and 150 MB of tarballs must never be
+# committed. .dist-staging is the same thing under another name.
+.asdf-php-dist/
+.dist-staging/
+
 # Pinned build inputs are NOT in this branch. `asdf plugin add` clones this
 # branch, so anything here is downloaded by every user at install time — and
 # they never need the sources, only the prebuilt tarball. The archived copies
