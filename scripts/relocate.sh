@@ -175,12 +175,21 @@ $targets = array();
 if (is_file($here . '/etc/pear.conf')) { $targets[] = $here . '/etc/pear.conf'; }
 foreach ((array)glob($here . '/lib/php/.registry/*.reg') as $f) { $targets[] = $f; }
 foreach (array('php', 'inc') as $ext) {
-    $it = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($here . '/lib/php', FilesystemIterator::SKIP_DOTS));
-    foreach ($it as $f) {
-        $p = $f->getPathname();
-        if (strpos($p, '/extensions/') !== false) { continue; }
-        if (strtolower(substr($p, -(strlen($ext) + 1))) === '.' . $ext) { $targets[] = $p; }
+    // 目录不存在就别扫 —— RecursiveDirectoryIterator 直接抛异常，整个脚本会在
+    // 写 pear.conf 之前退出。真实制品里 lib/php 一定存在，但「少一个目录就整体
+    // 静默不重定位」是最坏的失败方式，CI 的 T3v 夹具就是靠这一点把它抓出来的。
+    $libdir = $here . '/lib/php';
+    if (!is_dir($libdir)) { continue; }
+    try {
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($libdir, FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $f) {
+            $p = $f->getPathname();
+            if (strpos($p, '/extensions/') !== false) { continue; }
+            if (strtolower(substr($p, -(strlen($ext) + 1))) === '.' . $ext) { $targets[] = $p; }
+        }
+    } catch (Exception $e) {
+        fwrite(STDERR, "pear: skipping tree scan under $libdir: " . $e->getMessage() . "\n");
     }
 }
 
