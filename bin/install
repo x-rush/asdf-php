@@ -124,7 +124,14 @@ work="$(mktemp -d)"
 # deletion). Everything is verified before this trap runs.
 trap 'rm -rf -- "$work" 2>/dev/null || true' EXIT
 
-if [ -f "$dist/$name" ] && [ -f "$dist/$name.sha256" ]; then
+if [ -n "${ASDF_DOWNLOAD_PATH:-}" ] \
+   && [ -f "$ASDF_DOWNLOAD_PATH/$name" ] && [ -f "$ASDF_DOWNLOAD_PATH/$name.sha256" ]; then
+  # asdf already ran bin/download. Reuse what it staged instead of fetching the
+  # same 50 MB a second time; the checksum is still re-verified below.
+  src="download"
+  echo "asdf-php: using the artifact staged by bin/download in $ASDF_DOWNLOAD_PATH" >&2
+  cp "$ASDF_DOWNLOAD_PATH/$name" "$ASDF_DOWNLOAD_PATH/$name.sha256" "$work/"
+elif [ -f "$dist/$name" ] && [ -f "$dist/$name.sha256" ]; then
   # 本地构建优先。这条路不碰网络，也不受发布清单限制：编得出来就装得上。
   src="local"
   echo "asdf-php: using the locally built $name from $dist" >&2
@@ -158,6 +165,8 @@ fi
 "$ASDF_INSTALL_PATH/bin/php" -v | head -1
 if [ "$src" = "local" ]; then
   echo "asdf-php: $v installed from the local build in $dist" >&2
+elif [ "$src" = "download" ]; then
+  echo "asdf-php: $v installed from the staged download (sha256 verified)" >&2
 else
   echo "asdf-php: $v installed from frozen artifact; see manifest.json for EOL/security status" >&2
 fi

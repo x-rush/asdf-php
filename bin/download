@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# asdf-php v2 / bin/download — asdf's required "download" callback.
+#
+# asdf calls this before bin/install, with ASDF_DOWNLOAD_PATH. We fetch the
+# artifact (local build first, otherwise a published Release), verify sha256,
+# and stage exactly two files there: the tarball and its sidecar. bin/install
+# then consumes them instead of downloading a second time.
+#
+# Staging into a scratch dir and moving only on success matters: the plugin API
+# requires ASDF_DOWNLOAD_PATH to be free of files when download fails.
+set -euo pipefail
+
+: "${ASDF_INSTALL_VERSION:?asdf did not set ASDF_INSTALL_VERSION}"
+: "${ASDF_DOWNLOAD_PATH:?asdf did not set ASDF_DOWNLOAD_PATH}"
+
+v="$ASDF_INSTALL_VERSION"
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$(uname -m)" in
+  x86_64|amd64)  arch="x86_64" ;;
+  aarch64|arm64) arch="arm64" ;;
+  *) echo "asdf-php: unsupported CPU $(uname -m)" >&2; exit 1 ;;
+esac
+plat="${os}-${arch}"
+name="php-${v}-${plat}.tar.gz"
+
+# Keep in sync with bin/install; scripts/test.sh T0b asserts the three lists
+# and the artifact-name formula agree between the two callbacks.
+SUPPORTED="linux-x86_64"
+PLANNED="linux-arm64 darwin-x86_64 darwin-arm64"
+UNAVAILABLE="5.4.45:linux-arm64 5.6.40:linux-arm64"
+[ -n "${ASDF_PHP_SUPPORTED:-}" ] && SUPPORTED="$ASDF_PHP_SUPPORTED"
+[ -n "${ASDF_PHP_PLANNED:-}" ] && PLANNED="$ASDF_PHP_PLANNED"
+[ -n "${ASDF_PHP_UNAVAILABLE:-}" ] && UNAVAILABLE="$ASDF_PHP_UNAVAILABLE"
+
+is_supported() { case " $SUPPORTED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+dist="${ASDF_PHP_DIST_DIR:-$HOME/.asdf-php-dist}"
+
+platform_gate() {
+  is_supported "$plat" && return 0
+
+  if [ "$plat" = "darwin-arm64" ] && is_supported "darwin-x86_64"; then
+    if /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+      echo "asdf-php: no arm64 build published; using darwin-x86_64 under Rosetta 2" >&2
+      plat="darwin-x86_64"
+      name="php-${v}-${plat}.tar.gz"
+      return 0
+    fi
+    cat >&2 <<'ROSETTA'
+asdf-php: this release ships only a darwin-x86_64 build. That runs on Apple
+          Silicon through Rosetta 2, but Rosetta is not installed.
+          Install it once, then re-run:
+              softwareupdate --install-rosetta --agree-to-license
+ROSETTA
+    exit 1
+  fi
+
+  case " $UNAVAILABLE " in
+    *" ${v}:${plat} "*)
+      cat >&2 <<EOF
+asdf-php: PHP ${v} will not be built for ${plat}.
+          The base image for this version (debian:jessie) publishes no arm64
+          build, and the reason ${v} exists is that it runs against glibc 2.19 —
+          which a newer base would take away. This is a deliberate limit, not a
+          missing milestone, so there is nothing to wait for.
+          For arm64 use 7.2 and newer: asdf install php 7.4.33
+EOF
+      exit 1 ;;
+  esac
+
+  cat >&2 <<EOF
+asdf-php: nothing to install for ${plat}.
+          Looked for a local build in ${dist} (none), and this platform has no
+          published release. Build it on this machine first — that is the
+          supported path when a platform has no release:
+              bash scripts/l2.sh ${v} --install
+EOF
+  echo "asdf-php: currently published: ${SUPPORTED}" >&2
+  case " $PLANNED " in
+    *" $plat "*) echo "asdf-php: ${plat} is planned but not published yet (no build host has produced it; see the Platform support table)" >&2 ;;
+  esac
+  echo "asdf-php: see the Platform support table in README.md" >&2
+  echo "asdf-php: nothing was downloaded; your existing installs are untouched" >&2
+  exit 1
+}
+
+if command -v sha256sum >/dev/null 2>&1; then
+  hash_cmd() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  hash_cmd() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  echo "asdf-php: no sha256 tool found (need sha256sum or shasum)" >&2
+  exit 1
+fi
+
+scratch="$(mktemp -d)"
+trap 'rm -rf -- "$scratch" 2>/dev/null || true' EXIT
+mkdir -p "$ASDF_DOWNLOAD_PATH"
+
+if [ -f "$dist/$name" ] && [ -f "$dist/$name.sha256" ]; then
+  src="local"
+  echo "asdf-php: staging the locally built $name from $dist" >&2
+  cp "$dist/$name" "$dist/$name.sha256" "$scratch/"
+else
+  platform_gate
+  base="${ASDF_PHP_RELEASE_BASE:-https://github.com/x-rush/asdf-php/releases/download}"
+  url="${base}/php-${v}/${name}"
+  src="release"
+  curl -fL --retry 3 -o "$scratch/$name" "$url"
+  curl -fL --retry 3 -o "$scratch/$name.sha256" "$url.sha256"
+fi
+
+expected="$(awk 'NR==1 {print $1}' "$scratch/$name.sha256")"
+actual="$(hash_cmd "$scratch/$name")"
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "asdf-php: sha256 mismatch for $name (source: $src)" >&2
+  if [ "$src" = "local" ]; then
+    echo "asdf-php: the local copy is corrupt or was overwritten; rebuild with: bash scripts/l2.sh $v" >&2
+  fi
+  exit 1
+fi
+
+# Only now does anything land in ASDF_DOWNLOAD_PATH.
+mv "$scratch/$name" "$scratch/$name.sha256" "$ASDF_DOWNLOAD_PATH/"
+echo "asdf-php: $v staged from $src in $ASDF_DOWNLOAD_PATH" >&2

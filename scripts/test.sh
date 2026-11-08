@@ -43,24 +43,41 @@ echo "== asdf-php v2 / L0 static contract =="
 # `asdf list all php` die with "Permission denied" on Linux. Windows worktrees
 # report +x for every file, so only the index mode is trustworthy here.
 if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  cb_modes="$(git -C "$root" ls-files -s bin/install bin/list-all)"
+  cb_modes="$(git -C "$root" ls-files -s bin/install bin/download bin/list-all)"
   cb_bad="$(printf '%s\n' "$cb_modes" | awk '$1 != "100755" {print $4}')"
   cb_count="$(printf '%s\n' "$cb_modes" | grep -c .)"
-  if [ "$cb_count" -eq 2 ] && [ -z "$cb_bad" ]; then
-    pass "T0 plugin callbacks executable in git index (bin/install, bin/list-all)"
+  if [ "$cb_count" -eq 3 ] && [ -z "$cb_bad" ]; then
+    pass "T0 plugin callbacks executable in git index (install, download, list-all)"
   else
-    fail "T0 plugin callback mode: expected two 100755 entries, got [${cb_bad:-missing/incomplete}]"
+    fail "T0 plugin callback mode: expected three 100755 entries, got [${cb_bad:-missing/incomplete}]"
   fi
 else
   skip "T0 executable-bit check (not a git checkout)"
 fi
 
-if bash -n "$root/bin/install" "$root/bin/list-all" "$root/scripts/vendor.sh" \
+# T0b: bin/download and bin/install both resolve the platform and the artifact
+# name. If their gate lists drift, asdf's download callback downloads something
+# bin/install would refuse (or vice versa). Compare the declarations directly.
+lists_equal=1
+for key in SUPPORTED PLANNED UNAVAILABLE; do
+  a="$(sed -n "s/^${key}=\"\(.*\)\"$/\1/p" "$root/bin/install" | head -1)"
+  b="$(sed -n "s/^${key}=\"\(.*\)\"$/\1/p" "$root/bin/download" | head -1)"
+  if [ -z "$a" ] || [ "$a" != "$b" ]; then
+    fail "T0b $key drift: install [$a] != download [$b]"
+    lists_equal=0
+  fi
+done
+if [ "$lists_equal" -eq 1 ]; then
+  pass "T0b download/install share the same platform gate declarations"
+fi
+
+if bash -n "$root/bin/install" "$root/bin/download" "$root/bin/list-all" \
+        "$root/scripts/vendor.sh" \
         "$root/scripts/relocate.sh" "$root/scripts/smoke-artifact.sh" \
         "$root/scripts/pack-artifact.sh" "$root/scripts/pin-base.sh" \
         "$root/scripts/image-platforms.sh" \
         "$root/scripts/l2.sh" "$root/build/macos.sh" 2>"$tmp/n.err"; then
-  pass "T1 bash -n on all 10 shell scripts"
+  pass "T1 bash -n on all 11 shell scripts"
 else
   fail "T1 syntax: $(cat "$tmp/n.err")"
 fi
@@ -1058,6 +1075,34 @@ FAKE_DARWIN
     pass "T9b corrupt local artifact -> mismatch + tells you to rebuild locally"
   else
     fail "T9b wrong rejection: $(tail -2 "$tmp/localbad.out")"
+  fi
+
+  # T9c: asdf's real flow calls bin/download first and bin/install second.
+  # Download must stage a verified artifact into ASDF_DOWNLOAD_PATH; install
+  # must consume it instead of fetching the same tarball again. The Release
+  # base is unreachable on purpose, so any second fetch fails the test.
+  dl_dist="$tmp/dl-dist"
+  dl_path="$tmp/dl-path"
+  mkdir -p "$dl_dist" "$dl_path"
+  make_artifact "$dl_dist/$name" 1
+  sha256_of "$dl_dist/$name" > "$dl_dist/$name.sha256"
+  if ( cd "$tmp" && PATH="$fakebin:$PATH" \
+        ASDF_INSTALL_VERSION="$ver" ASDF_DOWNLOAD_PATH="$dl_path" \
+        ASDF_PHP_DIST_DIR="$dl_dist" \
+        ASDF_PHP_RELEASE_BASE="http://127.0.0.1:1/unreachable" \
+          bash "$root/bin/download" ) >"$tmp/dl.out" 2>&1 \
+     && [ -f "$dl_path/$name" ] && [ -f "$dl_path/$name.sha256" ] \
+     && ( cd "$tmp" && PATH="$fakebin:$PATH" \
+          ASDF_INSTALL_VERSION="$ver" ASDF_INSTALL_PATH="i_dl" \
+          ASDF_DOWNLOAD_PATH="$dl_path" \
+          ASDF_PHP_DIST_DIR="$tmp/no-local-dist" \
+          ASDF_PHP_RELEASE_BASE="http://127.0.0.1:1/unreachable" \
+            bash "$root/bin/install" ) >"$tmp/dl-install.out" 2>&1 \
+     && [ -x "$tmp/i_dl/bin/php" ] \
+     && grep -q 'staged download' "$tmp/dl-install.out"; then
+    pass "T9c bin/download stages + bin/install consumes without a second fetch"
+  else
+    fail "T9c download/install chain: $(tail -3 "$tmp/dl-install.out" 2>/dev/null) / $(tail -3 "$tmp/dl.out")"
   fi
 fi
 
