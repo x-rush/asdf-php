@@ -12,9 +12,12 @@ name: build-php-artifacts
 on:
   push:
     paths:
+      - 'bin/**'
       - 'versions/**'
+      - 'versions.txt'
       - 'build/**'
       - 'scripts/**'
+      - 'verify/**'
       - 'manifest.json'
       - '.github/workflows/build.yml'
   schedule:
