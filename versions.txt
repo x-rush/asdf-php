@@ -15,3 +15,6 @@
 # planned != published: a line is added here ONLY after its artifact is uploaded
 # and manifest.json has a real sha256 + status "published".
 5.4.45
+# 7.4.33 published 2026-11-08 to Releases tag php-7.4.33 (sha256 e69dc617...),
+# linux-x86_64 only — linux-arm64 and darwin-x86_64 are still not_built.
+7.4.33

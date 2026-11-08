@@ -285,8 +285,8 @@
       "artifacts": {
         "linux-x86_64": {
           "name": "php-7.4.33-linux-x86_64.tar.gz",
-          "sha256": null,
-          "status": "not_built"
+          "sha256": "e69dc617ef956ee5f80e5db56a7fc5a82da2263d9c51a34bf670a0b6b6d4f153",
+          "status": "published"
         },
         "linux-arm64": {
           "name": "php-7.4.33-linux-arm64.tar.gz",
