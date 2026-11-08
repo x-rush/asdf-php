@@ -1,0 +1,9 @@
+--with-openssl
+--with-zip
+--with-curl
+--enable-gd
+--with-freetype
+--with-jpeg
+--enable-mbstring
+--with-mysqli
+--with-pdo-mysql

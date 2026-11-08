@@ -124,7 +124,10 @@ fi
 # 本次没下载的版本记录删掉 —— 否则 CI 每次单版本构建都会把漂移门禁变成永久红灯。
 python3 "$root/scripts/vendor-ledger.py" "$vendor"
 
-# ---- 5) 回填 versions/*.toml ----------------------------------------------
+# ---- 5) 校验声明值 vs 实际字节，再回填 versions/*.toml --------------------
+# 先校验后回填：如果定义里已有一个真实 sha256 与刚下载的字节不符，说明上游换过包
+# 或者有人手改了定义 —— 这时绝不能顺手把它覆盖成新值，那等于把篡改洗白。
+python3 "$root/scripts/verify-hashes.py" "$root" "$vendor"
 # 门禁按 --versions 作用域，见 scripts/fill-placeholders.py 文件头：过去它扫描
 # 全部 toml，任何一个还没轮到冻结的版本都会让单版本构建在第一步就死掉。
 if [ -n "$only" ]; then

@@ -1,0 +1,9 @@
+--with-openssl=/opt/toolchain/openssl-1.0.2u
+--enable-mbstring
+--enable-zip
+--with-curl
+--with-gd
+--with-mysql
+--with-mysqli
+--with-pdo-mysql
+--enable-opcache

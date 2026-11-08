@@ -49,7 +49,7 @@ else
 fi
 
 if python3 -m py_compile "$root/scripts/gen-build-inputs.py" "$root/scripts/vendor-ledger.py" \
-        "$root/scripts/fill-placeholders.py" 2>"$tmp/py.err"; then
+        "$root/scripts/fill-placeholders.py" "$root/scripts/verify-hashes.py" 2>"$tmp/py.err"; then
   pass "T1b build helper scripts compile"
 else
   fail "T1b python syntax: $(cat "$tmp/py.err")"
@@ -328,6 +328,30 @@ else
   fail "T3m platform detection duplicated in l2.sh / pin-base.sh"
 fi
 unset -f docker
+
+# T3n: 定义里声明的 sha256 必须真的和下载到的字节比对过。只写不验的哈希不是冻结
+# 输入，只是装饰 —— 上游换包、或有人手改定义，都会在构建中途变成看不懂的错误。
+mkdir -p "$tmp/vh/versions" "$tmp/vh/vendor"
+printf '%s\n' '[source]' 'url = "https://example.invalid/php-1.0.tar.gz"' \
+  'path = "vendor/php-1.0.tar.gz"' 'sha256 = "aaaaaaaa"' > "$tmp/vh/versions/1.0.toml"
+printf '%s\n' '{"php-1.0.tar.gz": {"sha256": "bbbbbbbb"}}' > "$tmp/vh/vendor/SOURCES.json"
+if python3 "$root/scripts/verify-hashes.py" "$tmp/vh" "$tmp/vh/vendor" \
+        >/dev/null 2>"$tmp/vh.err"; then
+  fail "T3n declared/vendored hash mismatch must be refused"
+elif grep -q 'aaaaaaaa' "$tmp/vh.err" && grep -q 'bbbbbbbb' "$tmp/vh.err"; then
+  pass "T3n hash mismatch refused, both values reported"
+else
+  fail "T3n mismatch rejection message is unhelpful: $(tail -2 "$tmp/vh.err")"
+fi
+
+printf '%s\n' '{"php-1.0.tar.gz": {"sha256": "aaaaaaaa"}}' > "$tmp/vh/vendor/SOURCES.json"
+printf '%s\n' '[source]' 'url = "https://example.invalid/php-2.0.tar.gz"' \
+  'path = "vendor/php-2.0.tar.gz"' 'sha256 = "FILL:php-2.0.tar.gz"' > "$tmp/vh/versions/2.0.toml"
+if python3 "$root/scripts/verify-hashes.py" "$tmp/vh" "$tmp/vh/vendor" >/dev/null 2>&1; then
+  pass "T3n matching hash passes; unfrozen (FILL:) and not-yet-fetched inputs are skipped"
+else
+  fail "T3n verify-hashes rejected a valid tree"
+fi
 
 echo "== asdf-php v2 / L1 artifact-repo contract =="
 # The fake release server serves the artifact name bin/install would request on
