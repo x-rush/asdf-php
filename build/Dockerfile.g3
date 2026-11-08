@@ -8,7 +8,7 @@
 # 等它 EOL 时把 G2 那段 try/fallback 抄过来即可，别提前加无用分支。
 #
 # 与 G2 的 flag 差异（照抄会静默丢功能，T3 系列守着）：
-#   PHP 8.1 起 GD 的开关是 --enable-gd（--with-gd 变成未识别选项，只警告不报错，
+#   PHP 7.4 起 GD 的开关就叫 --enable-gd（--with-gd 变成未识别选项，只警告不报错，
 #   结果就是 gd 没编进去），外部库仍用 --with-jpeg / --with-freetype。
 #   sodium 8.1 起默认启用，需要 libsodium-dev。
 ARG BASE_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
@@ -20,14 +20,17 @@ ARG PHP_DIR=/opt/php/${PHP_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
+# bookworm 现在是活源，但仍走同一个取包器：一是万一哪天 bookworm 也被撤进
+# archive，这一层不用再改；二是国内到 deb.debian.org 也会抽风，脚本自带
+# 换源与断点续传。ARG 逃生口见 build/apt-install.sh 文件头。
+ARG APT_MIRROR_MAIN=
+ARG APT_MIRROR_SEC=
+COPY build/apt-install.sh /tmp/apt-install.sh
+RUN sh /tmp/apt-install.sh bookworm \
       build-essential autoconf re2c pkg-config file dpkg-dev bison \
       libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
       zlib1g-dev libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
-      libsqlite3-dev libargon2-dev libsodium-dev; \
-    rm -rf /var/lib/apt/lists/*
+      libsqlite3-dev libargon2-dev libsodium-dev
 
 COPY vendor/ /opt/vendor/
 COPY build/.gen/ /opt/gen/

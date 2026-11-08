@@ -187,13 +187,23 @@ bash scripts/l2.sh 7.4.33 --platform linux-arm64   # needs a native arm64 host
 bash build/macos.sh 8.1.34 --arch arm64
 ```
 
-Adding a version means adding `versions/<ver>.toml` — not editing a Dockerfile or a script. `build/Dockerfile.g1|g2|g3` read every flag, CFLAGS override and extension list from that file through `scripts/gen-build-inputs.py`, so there is exactly one place per version where build inputs are declared.
+Adding a version means adding `versions/<ver>.toml` — not editing a Dockerfile or a script. `build/Dockerfile.g1|g2|g3` read every flag, CFLAGS override and extension list from that file through `scripts/gen-build-inputs.py`, so there is exactly one place per version where build inputs are declared. The 5.4 track is the single exception: `build/Dockerfile.5.4` predates the generator and hardcodes its flag list, so `T3r` cross-checks it against `versions/5.4.45.toml` — otherwise a definition edit would silently leave the 5.4.45 artifact behind.
+
+One part of the build cannot be pinned by this repository: build dependencies come from a Debian mirror. Debian moves an EOL suite to `archive.debian.org`, whose Fastly front end is unreliable from some networks — a 67 MB download that dies on the last three packages used to abort the whole layer and start again from zero. `build/apt-install.sh` walks a source chain (live mirror → Chinese archive mirrors → `archive.debian.org`), keeps apt's partial download cache across attempts, and resumes with `--fix-missing` instead of refetching. The domestic mirrors come before the canonical archive because `archive.debian.org` is served through Fastly and measured 139 kB/s from mainland China — 8 minutes for a 67 MB layer — while those mirrors carry byte-identical packages at MB/s; `archive.debian.org` stays last so no region loses a source. Behind a proxy or an internal mirror, skip the chain entirely:
+
+```bash
+ASDF_PHP_APT_MIRROR_MAIN=http://mirror.example/debian-archive/debian \
+ASDF_PHP_APT_MIRROR_SEC=http://mirror.example/debian-archive/debian-security \
+bash scripts/l2.sh 7.4.33
+```
+
+(`HTTP_PROXY`/`HTTPS_PROXY` from your environment are forwarded to `docker build` automatically; nothing to do there.)
 
 The build is pinned to a dated base image digest. It produces the tarball, runs the smoke test against a fresh unpack path, and refuses to publish on a warning. `scripts/pack-artifact.sh` holds the packaging logic shared by all three templates and the macOS path: bundle runtime libs, relocate, move the prefix to a stranger path and verify extensions still load, then tar + sha256.
 
 `scripts/test.sh` runs the static contract suite: definition/schema consistency, per-version configure-flag validity, no source-compilation regressions, support-matrix drift, platform-gate drift, and the offline fallback path.
 
-A note on why configure flags are gated twice: a wrong flag does not fail the build, it produces an artifact that runs but silently lacks features (`--with-mysql` vanished in PHP 7.0, `--with-gd` became `--enable-gd` in 8.1, gd's `--with-jpeg-dir` became `--with-jpeg` in 7.4). `gen-build-inputs.py` rejects them up front, and the smoke test additionally calls `imagecreatefromjpeg`, `mb_strlen`, `curl_init`, `mysqli_connect` and friends on the finished artifact.
+A note on why configure flags are gated twice: a wrong flag does not fail the build, it produces an artifact that runs but silently lacks features (`--with-mysql` vanished in PHP 7.0, gd's `--with-gd` became `--enable-gd` and zip's `--enable-zip` became `--with-zip`, both in 7.4, gd's `--with-jpeg-dir` became `--with-jpeg` in 7.4). `gen-build-inputs.py` rejects them up front, `check-flags.py` verifies them against each version's own `ext/*/config.m4`, and the smoke test additionally calls `imagecreatefromjpeg`, `mb_strlen`, `curl_init`, `mysqli_connect`, `gzencode`, `iconv`, `bcadd`, `socket_create` and friends on the finished artifact.
 
 ## Uninstall
 

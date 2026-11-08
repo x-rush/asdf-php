@@ -136,10 +136,22 @@ test -s "build/.gen/$ver.flags"
 
 step "3/6 docker build ($docker_plat, PHP $ver)"
 rm -rf out; mkdir -p out
+# 取包源逃生口：走代理或内网镜像的机器不用改 Dockerfile，设环境变量即可，
+# 例如 ASDF_PHP_APT_MIRROR_MAIN=http://mirror.corp/debian-archive/debian。
+# 不设就是默认候选链（活源 → archive.debian.org → 阿里云/南大归档镜像）。
+apt_args=""
+if [ -n "${ASDF_PHP_APT_MIRROR_MAIN:-}" ]; then
+  apt_args="--build-arg APT_MIRROR_MAIN=$ASDF_PHP_APT_MIRROR_MAIN"
+fi
+if [ -n "${ASDF_PHP_APT_MIRROR_SEC:-}" ]; then
+  apt_args="$apt_args --build-arg APT_MIRROR_SEC=$ASDF_PHP_APT_MIRROR_SEC"
+fi
+
 docker build --platform "$docker_plat" \
   --file "$dockerfile" \
   --build-arg "PHP_VERSION=$ver" \
   --build-arg "ARTIFACT_ARCH=$art_arch" \
+  $apt_args \
   --tag "asdf-php-build:$ver-$art_arch" .
 
 step "4/6 extract artifact"

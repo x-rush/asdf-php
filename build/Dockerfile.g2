@@ -3,7 +3,9 @@
 # 为什么单独一代，而不是复用 G1：
 #   * PHP 7.0 起 ext/mysql 被移除，--with-mysql 已不存在；照抄 5.4 的 flags
 #     不会报错，只会让 mysql 扩展静默消失（T3h 守这条）
-#   * PHP 7.2 起 zip 改用 libzip：flag 从 5.x 的 --enable-zip 变成 --with-zip
+#   * zip 的 flag 分界在 7.4：--with-zip（系统 libzip）7.4 才有，7.2/7.3 仍然是
+#     bundled 的 --enable-zip，且 7.3 的 m4 默认想找系统 libzip，必须显式
+#     --with-libzip=no 才走 bundled（bullseye 的 libzip 1.7 API 它们不认）
 #   * PHP 7.4 起 mbstring 不再自带 oniguruma，必须 apt libonig-dev，否则
 #     --enable-mbstring 编出来是空壳
 #   * OpenSSL 3.0 官方不支持 8.1 之前的分支（bugs.php.net #81540，明确不 backport），
@@ -26,29 +28,20 @@ ARG PHP_DIR=/opt/php/${PHP_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# bullseye 的 LTS 在 2026-08-31 结束，之后会被挪进 archive.debian.org。
-# 与其赌「现在还在不在」，不如先走活源、失败再切归档：两条路径的包内容一致
-# （同一 suite 同一版本不会被改写），base digest 又把 glibc 钉死了，
-# 所以切换只影响镜像来源，不影响产物。日志里会打印实际走了哪条路。
-RUN set -eux; \
-    PKGS="build-essential autoconf re2c pkg-config file dpkg-dev bison \
+# bullseye 的 LTS 在 2026-08-31 结束，活源随时会把整个 suite 撤走，而
+# archive.debian.org 由 Fastly 提供、到国内链路不稳（实测 8 分钟下完 67.7 MB，
+# 最后 3 个包 Connection failed，exit 100）。取包策略统一放进
+# build/apt-install.sh：活源 → 国内归档镜像 → archive.debian.org 逐条重试，断点续传，
+# 断在哪就只补哪几个包。这里有 build-arg 逃生口：走代理/内网镜像的机器传
+# APT_MIRROR_MAIN 插队即可，不必改文件。
+ARG APT_MIRROR_MAIN=
+ARG APT_MIRROR_SEC=
+COPY build/apt-install.sh /tmp/apt-install.sh
+RUN sh /tmp/apt-install.sh bullseye \
+      build-essential autoconf re2c pkg-config file dpkg-dev bison \
       libxml2-dev libssl-dev libcurl4-openssl-dev libzip-dev \
       zlib1g-dev libjpeg-dev libpng-dev libfreetype6-dev libonig-dev \
-      libsqlite3-dev libargon2-dev"; \
-    if apt-get update && apt-get install -y --no-install-recommends $PKGS; then \
-      echo "apt: live bullseye mirror"; \
-    else \
-      echo "apt: live mirror failed, switching to archive.debian.org"; \
-      printf '%s\n' \
-        'deb http://archive.debian.org/debian bullseye main' \
-        'deb http://archive.debian.org/debian-security bullseye-security main' \
-        > /etc/apt/sources.list; \
-      printf '%s\n' 'Acquire::Check-Valid-Until "false";' \
-        > /etc/apt/apt.conf.d/99-archive; \
-      apt-get update; \
-      apt-get install -y --no-install-recommends --allow-unauthenticated $PKGS; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
+      libsqlite3-dev libargon2-dev
 
 COPY vendor/ /opt/vendor/
 COPY build/.gen/ /opt/gen/

@@ -19,33 +19,25 @@ FROM ${BASE_IMAGE}
 # 已实测两例：libcurl（换 GnuTLS 后端物理隔离）、libpq（本版不编 pgsql 驱动）。
 # 后续加新版本时同理：宁可缩减冻结制品的功能集，也不要混进两套 OpenSSL。
 #
-# curl 扩展走 GnuTLS 后端（libcurl4-gnutls-dev），刻意不用 libcurl4-openssl-dev：
-# jessie 的 libcurl 由系统 OpenSSL 1.0.1 提供，soname 是 libssl.so.1.0.0；PHP 5.4
+# curl 扩展走 GnuTLS 后端（libcurl4-gnutls-dev），刻意不用 libcurl4-openssl-dev：# jessie 的 libcurl 由系统 OpenSSL 1.0.1 提供，soname 是 libssl.so.1.0.0；PHP 5.4
 # 自己用的 OpenSSL 1.0.2u 也是同一个 soname。一旦 --with-openssl=<prefix> 把
 # -L/opt/toolchain/... 注入链接搜索路径，链接器就拿自建 libssl 去满足 libcurl 的
 # DT_NEEDED，符号版本对不上 → ext/curl/config.m4 的
 # PHP_CHECK_LIBRARY(curl,curl_easy_perform) 失败（"There is something wrong"）。
 # 换 SSL 后端是物理隔离，比改 soname / 静态化 OpenSSL 的副作用都小。
-COPY keys/jessie.gpg /etc/apt/trusted.gpg.d/jessie.gpg
-# archive.debian.org 的 jessie 签名密钥早已过期（实测 KEYEXPIRED
-# 1587841717 / 1668892417 / 1747766513）：apt-get update 会放行，但 install
-# 会把 84 个包全判为 "cannot be authenticated" 并以 exit 100 拒绝。
-# 只在这个一次性构建容器里对该源跳过签名校验；不进入任何运行时镜像，
-# 制品的可复现性另由 base digest + vendor/ 的 sha256 锁定，不依赖 apt 签名。
-RUN printf '%s\n' \
-      'deb [trusted=yes] http://archive.debian.org/debian jessie main' \
-      'deb [trusted=yes] http://archive.debian.org/debian-security jessie/updates main' \
-      > /etc/apt/sources.list \
- && printf '%s\n' \
-      'Acquire::Check-Valid-Until "false";' \
-      'Acquire::AllowInsecureRepositories "true";' \
-      > /etc/apt/apt.conf.d/99-archive \
- && apt-get update \
- && apt-get install -y --allow-unauthenticated --no-install-recommends \
+# 取包策略见 build/apt-install.sh：EOL 的 suite 直接走归档镜像（活源的 pool
+# 已与自己的索引对不上），逐条重试 + 断点续传。jessie 的 Release 签名早已过期
+# （KEYEXPIRED 1587841717 / 1668892417 / 1747766513），脚本在真签名失败后自动
+# 退到 [trusted=yes]，只作用于这个一次性构建容器；不进入任何运行时镜像。
+# 这里原先 COPY 了一份 keys/jessie.gpg —— 那个文件在 .gitignore 里，新克隆根本
+# 没有，docker build 会停在 COPY 行。既然 trusted=yes 那档也必须走，已移除。
+ARG APT_MIRROR_MAIN=
+ARG APT_MIRROR_SEC=
+COPY build/apt-install.sh /tmp/apt-install.sh
+RUN sh /tmp/apt-install.sh jessie \
       build-essential autoconf re2c pkg-config file \
       zlib1g-dev libxml2-dev libcurl4-gnutls-dev libjpeg-dev libpng-dev \
-      libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev \
- && rm -rf /var/lib/apt/lists/*
+      libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev
 
 COPY vendor/ /opt/vendor/
 
@@ -60,6 +52,11 @@ COPY vendor/ /opt/vendor/
 # SSL_*@OPENSSL_1.0.0 undefined reference。业务侧是 MySQL，且这是 offline
 # 迁移工具，不值得为 pgsql 驱动引入第二套 SSL 链。libpq-dev 也一并从 apt 移除。
 # 下面两个 test -r 是 fail-fast 断言，避免再次靠猜路径排错。
+# 注意：本文件是 5.4.45 的专用轨道，configure 的 flag 列表**硬编码在这里**，
+# 不走 build/.gen（模板版 g1/g2/g3 才读 .gen）。也就是说 versions/5.4.45.toml
+# 只是文档，改它不会影响这个产物 —— 2026-11-08 就踩了这个坑：七个版本统一补
+# 基础扩展集时改了 toml，而 5.4 的产物仍会缺 zlib（gzencode 静默缺席）。
+# 所以两边必须同时改，scripts/test.sh 的 T3q 用 toml 的 flags 去对这里做漂移门禁。
 RUN set -eux; \
     cd /opt/vendor; \
     tar xzf bison-2.7.tar.gz; cd bison-2.7; \
@@ -81,6 +78,8 @@ RUN set -eux; \
         --with-openssl=/opt/toolchain/openssl-1.0.2u \
         --enable-mbstring --enable-zip --with-curl --with-gd \
         --with-mysql --with-mysqli --with-pdo-mysql \
+        --with-zlib --with-iconv --enable-phar \
+        --enable-bcmath --enable-sockets --enable-exif --enable-pcntl \
         || { echo "=== configure failed; config.log tail ==="; tail -n 200 config.log; exit 1; }; \
       make -j"$(nproc)"; make install; \
     mkdir -p /opt/php/5.4.45/etc/conf.d

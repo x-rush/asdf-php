@@ -102,24 +102,7 @@ while IFS=$'\t' read -r name url; do
   fetch "$name" "$url"
 done <<< "$plan"
 
-# ---- 3) Debian 归档签名公钥（只有 G1 的 jessie 需要） -----------------------
-DEBIAN_KEY_URL="${DEBIAN_KEY_URL:-https://ftp-master.debian.org/keys/archive-key-8.asc}"
-mkdir -p "$root/keys"
-if [ -s "$root/keys/jessie.gpg" ]; then
-  echo "cached  keys/jessie.gpg"
-elif command -v gpg >/dev/null 2>&1; then
-  echo "fetch   keys/jessie.gpg <- $DEBIAN_KEY_URL"
-  curl -fL --retry 3 --connect-timeout 15 -o "$vendor/jessie-key.asc" "$DEBIAN_KEY_URL"
-  if ! grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$vendor/jessie-key.asc"; then
-    echo "vendor: jessie key is not a PGP public key block — check DEBIAN_KEY_URL" >&2
-    exit 1
-  fi
-  gpg --batch --yes --dearmor -o "$root/keys/jessie.gpg" "$vendor/jessie-key.asc"
-else
-  echo "NOTE: gpg not found; export the Debian archive key into keys/jessie.gpg manually" >&2
-fi
-
-# ---- 4) 记账：SOURCES.json 是完整性契约，CI 逐文件比对 ----------------------
+# ---- 3) 记账：SOURCES.json 是完整性契约，CI 逐文件比对 ----------------------
 # 合并语义（只增不减）在 vendor-ledger.py 里，配套的 T3k 会验它不会把
 # 本次没下载的版本记录删掉 —— 否则 CI 每次单版本构建都会把漂移门禁变成永久红灯。
 python3 "$root/scripts/vendor-ledger.py" "$vendor"

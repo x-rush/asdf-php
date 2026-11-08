@@ -447,6 +447,192 @@ else
   fail "T3p unavailable-platform contract: $(tail -2 "$tmp/t3p.err")"
 fi
 
+# T3q: 取包逻辑只能有一份实现。以前 g1/g2 各写一套 sources.list 加两档 fallback，
+# bullseye 那次断连暴露了它们的共同缺陷：apt 一次失败就整层重来，8 分钟下完的
+# 67.7 MB 全扔掉 —— 而 apt 本身支持续传，只是没人给它第二次机会。
+# 现在四个 Dockerfile 一律 `sh /tmp/apt-install.sh <dist> <pkgs...>`，
+# 重试 / 换源 / 续传都在脚本里，改一处四个模板同时受益。
+if [ -f "$root/build/apt-install.sh" ] && sh -n "$root/build/apt-install.sh" 2>"$tmp/t3q.err"; then
+  pass "T3q build/apt-install.sh exists and parses as POSIX sh"
+else
+  fail "T3q apt-install.sh: $(cat "$tmp/t3q.err" 2>/dev/null)"
+fi
+
+if grep -q '> /etc/apt/sources.list' "$root"/build/Dockerfile.g1 "$root"/build/Dockerfile.g2 \
+     "$root"/build/Dockerfile.g3 "$root"/build/Dockerfile.5.4 2>/dev/null; then
+  fail "T3q a Dockerfile writes sources.list itself again (two implementations of the same policy)"
+else
+  pass "T3q no Dockerfile writes /etc/apt/sources.list directly"
+fi
+
+used=0
+for gen in g1 g2 g3 5.4; do
+  grep -q 'sh /tmp/apt-install.sh' "$root/build/Dockerfile.$gen" && used=$((used + 1))
+done
+if [ "$used" -eq 4 ]; then
+  pass "T3q all four Dockerfiles install build deps through apt-install.sh"
+else
+  fail "T3q only $used/4 Dockerfiles use apt-install.sh"
+fi
+
+missing=""
+for want in 'Acquire::Retries' '--fix-missing' 'dpkg --configure -a' \
+            'archive.debian.org' 'mirrors.aliyun.com' 'mirror.nju.edu.cn'; do
+  grep -q -- "$want" "$root/build/apt-install.sh" || missing="$missing $want"
+done
+if [ -z "$missing" ]; then
+  pass "T3q apt-install.sh keeps retry + resume + a three-mirror fallback chain"
+else
+  fail "T3q apt-install.sh missing:$missing"
+fi
+
+# T3r: build/Dockerfile.5.4 是 5.4.45 的专用轨道，configure flags 硬编码在文件里，
+# 不读 build/.gen。也就是说改 versions/5.4.45.toml 不会影响它的产物 —— 2026-11-08
+# 统一补基础扩展集时就漏了这一处，重编出来的 5.4.45 仍会静默缺 zlib/gzencode。
+# 单向漂移门禁：toml 里声明的每个 flag，Dockerfile 里必须出现同名的那一个。
+if python3 - "$root" <<'PY' 2>"$tmp/t3r.err"
+import pathlib, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+flags = tomllib.loads((root / "versions" / "5.4.45.toml").read_text(encoding="utf-8"))["configure"]["flags"]
+dockerfile = (root / "build" / "Dockerfile.5.4").read_text(encoding="utf-8")
+missing = [f for f in flags if f.split("=", 1)[0] not in dockerfile]
+assert not missing, ("build/Dockerfile.5.4 hardcodes its flags and is out of sync with "
+                     "versions/5.4.45.toml: " + ", ".join(missing))
+print("ok")
+PY
+then
+  pass "T3r Dockerfile.5.4 satisfies every flag declared in versions/5.4.45.toml"
+else
+  fail "T3r 5.4 flag drift: $(tail -2 "$tmp/t3r.err")"
+fi
+
+# T3s: 光看脚本里有没有 "--fix-missing" 这几个字不算验证。真正要证的是行为：
+# 活源失败后会不会换源、换源后安装中途断连会不会续传、成不成之后会不会无谓地
+# 继续砸后面的镜像。用假 apt-get 复现 2026-11-08 的那次事故（活源全灭，归档
+# 源把 67.7 MB 下完卡在最后几个包，第二次调用 --fix-missing 才补齐）。
+mkdir -p "$tmp/t3s/bin" "$tmp/t3s/etc/apt" "$tmp/t3s/lists" "$tmp/t3s/state"
+cat > "$tmp/t3s/bin/apt-get" <<'SH'
+#!/bin/sh
+state="${APT_STATE:?}"
+list="$(grep -m1 '^deb' "${APT_ETC:-/etc/apt}/sources.list" 2>/dev/null || true)"
+printf 'apt-get %s | %s\n' "$*" "$list" >> "$state/calls"
+case "$*" in
+  update*)
+    # 活源视作已被整体撤走：apt-get update 直接 100。
+    case "$list" in *deb.debian.org*) exit 100 ;; esac
+    exit 0
+    ;;
+  install*)
+    # 归档源第一次安装断在最后几个包，第二次（带 --fix-missing）成功。
+    case "$*" in *--fix-missing*) exit 0 ;; esac
+    if [ -f "$state/failed_once" ]; then exit 0; fi
+    : > "$state/failed_once"
+    exit 100
+    ;;
+esac
+exit 0
+SH
+cat > "$tmp/t3s/bin/dpkg" <<'SH'
+#!/bin/sh
+printf 'dpkg %s\n' "$*" >> "${APT_STATE:?}/calls"
+exit 0
+SH
+chmod +x "$tmp/t3s/bin/apt-get" "$tmp/t3s/bin/dpkg"
+# Git Bash 的 mktemp 返回 "C:\Users\...\Temp/tmp.XXXX"，直接把这种路径塞进 PATH
+# 会被冒号切成两段（"C" 和 "\Users\..."），假 apt-get 根本不在搜索路径里。
+# 用 cygpath -u 转成 /tmp/... 再加。这是本测试唯一需要转换的路径。
+t3s_path="$tmp/t3s/bin"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) t3s_path="$(cygpath -u "$tmp/t3s/bin")" ;;
+esac
+run_apt_install() {  # $1 dist, $2 state dir, $3 log
+  mkdir -p "$2"
+  PATH="$t3s_path:$PATH" APT_STATE="$2" APT_ETC="$tmp/t3s/etc/apt" \
+    APT_LISTS="$tmp/t3s/lists" \
+    sh "$root/build/apt-install.sh" "$1" build-essential libzip-dev >"$3" 2>&1
+}
+
+# 分支一：还在维护的 suite（bookworm）先试活源；活源挂掉后应当落到国内归档镜像，
+# 中途断连要用 --fix-missing 续传，成功之后不许再白跑后面的镜像。
+if run_apt_install bookworm "$tmp/t3s/a" "$tmp/t3s/a.out"; then
+  calls="$tmp/t3s/a/calls"
+  first="$(grep -m1 '^apt-get' "$calls" | sed 's/.*| //')"
+  last="$(grep '^apt-get.*install' "$calls" | tail -1 | sed 's/.*| //')"
+  if grep -q -- '--fix-missing' "$calls" \
+     && grep -q 'dpkg --configure -a' "$calls" \
+     && printf '%s' "$first" | grep -q 'deb.debian.org' \
+     && printf '%s' "$last" | grep -q 'mirrors.aliyun.com' \
+     && ! grep -q 'nju\|archive\.debian\.org' "$calls"; then
+    pass "T3s live suite: live fails -> domestic archive succeeds, resume via --fix-missing, stops there"
+  else
+    fail "T3s live-suite chain: first=[$first] last=[$last] calls=$(wc -l < "$calls")"
+  fi
+else
+  fail "T3s apt-install.sh exited non-zero on a recoverable network failure: $(tail -3 "$tmp/t3s/a.out")"
+fi
+
+# 分支二：EOL 的 suite（bullseye）必须**一次都不碰** deb.debian.org。它的
+# security 索引仍在发布，但索引点名的文件已从 pool 清走：update 成功、install
+# 404，白下 70 MB 才失败。这条断言守的就是「别再把活源排在 EOL suite 前面」。
+if run_apt_install bullseye "$tmp/t3s/b" "$tmp/t3s/b.out"; then
+  calls="$tmp/t3s/b/calls"
+  first="$(grep -m1 '^apt-get' "$calls" | sed 's/.*| //')"
+  if ! grep -q 'deb.debian.org' "$calls" \
+     && printf '%s' "$first" | grep -q 'mirrors.aliyun.com'; then
+    pass "T3s EOL suite: deb.debian.org never contacted, starts at the archive mirror"
+  else
+    fail "T3s EOL suite still probes the live mirror: first=[$first]"
+  fi
+else
+  fail "T3s EOL-suite install failed: $(tail -3 "$tmp/t3s/b.out")"
+fi
+
+# T3t: Dockerfile 不许 COPY 仓库里不存在（或已被 .gitignore 掉）的文件。
+# g1 与 5.4 曾 COPY keys/jessie.gpg，而 keys/ 在 .gitignore 里：新克隆没有这个
+# 文件，docker build 停在 COPY 行，报的错与真正的失败原因（缺密钥）毫无关系。
+# vendor/ 与 build/.gen/ 是构建期产物，由 l2.sh 第 1、2 步准备，这里跳过。
+bad=""
+for f in "$root"/build/Dockerfile.*; do
+  while read -r src; do
+    case "$src" in
+      vendor/*|build/.gen/*) continue ;;
+    esac
+    if [ ! -e "$root/$src" ]; then
+      bad="$bad $src(missing)"
+    elif git -C "$root" rev-parse --git-dir >/dev/null 2>&1 \
+         && git -C "$root" check-ignore -q "$src"; then
+      bad="$bad $src(ignored)"
+    fi
+  done < <(awk '$1=="COPY"{for(i=2;i<=NF;i++) if($i !~ /^--/){print $i; break}}' "$f")
+done
+if [ -z "$bad" ]; then
+  pass "T3t every COPY source exists and is tracked (fresh clone can build)"
+else
+  fail "T3t Dockerfile copies untracked/missing paths:$bad"
+fi
+
+# 分支三：APT_MIRROR_MAIN 插队。这是网络不通时唯一能走的路（代理 / 内网镜像），
+# 而它走的是跟候选链不同的分支 —— 曾经 TRUST_ORDER 只在主链里赋值，override 分支
+# 一进来就在 set -u 下退出，等于把逃生口焊死了。这条断言守的就是它必须能跑。
+mkdir -p "$tmp/t3s/c"
+if PATH="$t3s_path:$PATH" APT_STATE="$tmp/t3s/c" APT_ETC="$tmp/t3s/etc/apt" \
+     APT_LISTS="$tmp/t3s/lists" \
+     APT_MIRROR_MAIN="http://override.example/debian" \
+     APT_MIRROR_SEC="http://override.example/debian-security" \
+     sh "$root/build/apt-install.sh" bookworm build-essential \
+     >"$tmp/t3s/c.out" 2>&1; then
+  calls="$tmp/t3s/c/calls"
+  if grep -q 'override\.example' "$calls" \
+     && printf '%s' "$(grep '^apt-get.*install' "$calls" | tail -1)" | grep -q 'override\.example' \
+     && ! grep -q 'aliyun\|nju\|archive\.debian\.org' "$calls"; then
+    pass "T3s APT_MIRROR_MAIN override is used first and short-circuits the chain"
+  else
+    fail "T3s override ignored: $(head -3 "$calls")"
+  fi
+else
+  fail "T3s override path crashed: $(tail -3 "$tmp/t3s/c.out")"
+fi
+
 echo "== asdf-php v2 / L1 artifact-repo contract =="
 # The fake release server serves the artifact name bin/install would request on
 # a SUPPORTED host. It is pinned to linux-x86_64 rather than derived from the

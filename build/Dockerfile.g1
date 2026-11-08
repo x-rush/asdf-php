@@ -22,26 +22,21 @@ ARG PHP_VERSION=5.6.40
 ARG ARTIFACT_ARCH=x86_64
 ARG PHP_DIR=/opt/php/${PHP_VERSION}
 
-COPY keys/jessie.gpg /etc/apt/trusted.gpg.d/jessie.gpg
-# archive.debian.org 的 jessie 签名密钥早已过期（实测 KEYEXPIRED 1587841717 等）：
-# apt-get update 放行、install 把 84 个包全判为 cannot be authenticated 并 exit 100。
-# 只在这个一次性构建容器里对该源跳过签名校验；制品可复现性由 base digest +
-# vendor/ 的 sha256 锁定，不依赖 apt 签名。
-RUN set -eux; \
-    printf '%s\n' \
-      'deb [trusted=yes] http://archive.debian.org/debian jessie main' \
-      'deb [trusted=yes] http://archive.debian.org/debian-security jessie/updates main' \
-      > /etc/apt/sources.list; \
-    printf '%s\n' \
-      'Acquire::Check-Valid-Until "false";' \
-      'Acquire::AllowInsecureRepositories "true";' \
-      > /etc/apt/apt.conf.d/99-archive; \
-    apt-get update; \
-    apt-get install -y --allow-unauthenticated --no-install-recommends \
+# 取包策略见 build/apt-install.sh：EOL 的 suite 直接走归档镜像（活源的 pool
+# 已与自己的索引对不上），逐条重试 + 断点续传。
+# jessie 的 Release 签名早已过期（KEYEXPIRED 1587841717 等），脚本会先按真签名
+# 试一次、失败后退到 [trusted=yes]，只作用于这个一次性构建容器；不进入任何运行时
+# 镜像。可复现性由 base digest + vendor/ 的 sha256 锁定，不依赖 apt 签名。
+# 早先这里还 COPY 了一份 keys/jessie.gpg，但 keys/ 是 .gitignore 掉的 —— 新克隆
+# 根本没有这个文件，docker build 会停在 COPY 上，报一句和签名毫无关系的错。
+# 既然 trusted=yes 那档无论如何都要走，这份密钥没有存在意义，已移除。
+ARG APT_MIRROR_MAIN=
+ARG APT_MIRROR_SEC=
+COPY build/apt-install.sh /tmp/apt-install.sh
+RUN sh /tmp/apt-install.sh jessie \
       build-essential autoconf re2c pkg-config file dpkg-dev bison \
       zlib1g-dev libxml2-dev libcurl4-gnutls-dev libjpeg-dev libpng-dev \
-      libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev; \
-    rm -rf /var/lib/apt/lists/*
+      libfreetype6-dev libicu-dev libmcrypt-dev libzip-dev
 
 COPY vendor/ /opt/vendor/
 COPY build/.gen/ /opt/gen/
